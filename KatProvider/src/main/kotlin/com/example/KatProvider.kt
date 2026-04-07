@@ -16,7 +16,7 @@ import java.net.URLEncoder
 import java.util.Locale
 
 class KatProvider : MainAPI() {
-    override var mainUrl = "https://katmoviehd.run"
+    override var mainUrl = "https://new.katmoviehd.cymru"
     override var name = "Kat"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var lang = "hi"
