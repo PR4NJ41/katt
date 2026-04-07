@@ -444,6 +444,7 @@ class KatProvider : MainAPI() {
             candidateLinks.add(normalizeUrl(href))
         }
 
+        debugLog("loadLinksFromHtml referer=$referer candidateLinks=${candidateLinks.size}")
         candidateLinks.forEach { link ->
             if (!loadKmhdLink(link, referer, subtitleCallback, callback)) {
                 loadExtractor(link, referer, subtitleCallback, callback)
@@ -573,6 +574,7 @@ class KatProvider : MainAPI() {
                     .map { it.groupValues[1] }
                     .filter { it.isNotBlank() && it != "null" }
                     .toSet()
+                debugLog("KMHD play parsed link=$link streamtape=${streamtapeIds.size} streamwish=${streamwishIds.size} quality=$quality")
 
                 streamtapeIds.forEach { id ->
                     loadExtractor("https://streamtape.com/e/$id", referer, subtitleCallback, callback)
@@ -597,6 +599,7 @@ class KatProvider : MainAPI() {
                             it.contains("fuckingfast.net/")
                     }
                     .toSet()
+                debugLog("KMHD file parsed link=$link directLinks=${directLinks.size}")
 
                 directLinks.forEach { out ->
                     loadExtractor(out, referer, subtitleCallback, callback)
@@ -621,6 +624,9 @@ class KatProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ) {
+        debugLog(
+            "emitEpisodeLinks playUrl=${episodeData.playUrl} streamTapeId=${episodeData.streamTapeId != null} streamWishId=${episodeData.streamWishId != null}"
+        )
         episodeData.streamTapeId?.let { id ->
             loadExtractor("https://streamtape.com/e/$id", episodeData.playUrl, subtitleCallback, callback)
         }
