@@ -1,7 +1,6 @@
 package com.example
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.fixUrl
@@ -67,12 +66,6 @@ class KatProvider : MainAPI() {
         )
 
         val year = Regex("""(19|20)\d{2}""").find(title)?.value?.toIntOrNull()
-        val tags = document.select(".tagcloud a, .post-meta a[rel=tag], .entry-tags a")
-            .map { it.text().trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-
-        val actors = extractActors(document)
         val episodes = extractEpisodes(document, title)
         val tvType = guessType(url, title, episodes.isNotEmpty())
 
@@ -84,16 +77,12 @@ class KatProvider : MainAPI() {
                 this.posterUrl = poster
                 this.plot = description
                 this.year = year
-                this.tags = tags
-                addActors(actors)
             }
         } else {
             newMovieLoadResponse(title, url, TvType.Movie, url.toJson()) {
                 this.posterUrl = poster
                 this.plot = description
                 this.year = year
-                this.tags = tags
-                addActors(actors)
             }
         }
     }
@@ -175,79 +164,33 @@ class KatProvider : MainAPI() {
     }
 
     private fun extractEpisodes(document: Document, title: String): List<Episode> {
-        val episodePattern = Regex(
-            """(?i)(?:s(?:eason)?\s*(\d+))?[^a-z0-9]*(?:e(?:pisode)?\s*|ep\s*|e)(\d{1,3})|(\d{1,2})x(\d{1,3})"""
-        )
+        val seasonEpisodePattern = Regex("""(?i)\b(\d{1,2})x(\d{1,3})\b""")
+        val episodePattern = Regex("""(?i)\b(?:episode|ep|e)\s*0*(\d{1,3})\b""")
+        val seasonPattern = Regex("""(?i)\bseason\s*(\d{1,2})\b""")
 
-        val parsedEpisodes = document.select(".entry-content a[href], .post-content a[href], article a[href]")
+        return document.select(".entry-content a[href], .post-content a[href], article a[href]")
             .mapNotNull { link ->
                 val text = link.text().trim()
                 val href = link.attr("href").trim()
-                if (href.isBlank() || !href.startsWith("http")) return@mapNotNull null
+                if (text.isBlank() || href.isBlank() || !href.startsWith("http")) return@mapNotNull null
 
-                val match = episodePattern.find(text)
-                    ?: episodePattern.find(href)
-                    ?: return@mapNotNull null
+                val seasonEpisodeMatch = seasonEpisodePattern.find(text)
+                val episodeMatch = seasonEpisodeMatch ?: episodePattern.find(text) ?: return@mapNotNull null
 
-                val seasonNumber = match.groupValues.getOrNull(1)?.toIntOrNull()
-                    ?: match.groupValues.getOrNull(3)?.toIntOrNull()
+                val seasonNumber = seasonEpisodeMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
+                    ?: seasonPattern.find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
                     ?: extractSeasonFromTitle(title)
-                val episodeNumber = match.groupValues.getOrNull(2)?.toIntOrNull()
-                    ?: match.groupValues.getOrNull(4)?.toIntOrNull()
+                val episodeNumber = seasonEpisodeMatch?.groupValues?.getOrNull(2)?.toIntOrNull()
+                    ?: episodeMatch.groupValues.getOrNull(1)?.toIntOrNull()
                     ?: return@mapNotNull null
 
                 newEpisode(href.toJson()) {
-                    name = text.ifBlank { "Episode $episodeNumber" }
+                    name = text
                     season = seasonNumber
                     episode = episodeNumber
                 }
             }
             .distinctBy { "${it.season}:${it.episode}:${it.data}" }
-
-        if (parsedEpisodes.size > 1) return parsedEpisodes
-
-        val fallbackLinks = document.select(".entry-content a[href], .post-content a[href], article a[href]")
-            .mapNotNull { link ->
-                val text = link.text().trim()
-                val href = link.attr("href").trim()
-                if (href.isBlank()) return@mapNotNull null
-                if (!href.contains("links.kmhd.eu/file/") && !href.contains("links.kmhd.eu/play?")) {
-                    return@mapNotNull null
-                }
-                if (episodePattern.find(text) == null && episodePattern.find(href) == null) {
-                    return@mapNotNull null
-                }
-                href
-            }
-            .distinct()
-
-        if (!title.contains("all episodes", ignoreCase = true) || fallbackLinks.size <= 1) {
-            return parsedEpisodes
-        }
-
-        val season = extractSeasonFromTitle(title)
-        return fallbackLinks.mapIndexed { index, href ->
-            newEpisode(href.toJson()) {
-                name = "Episode ${index + 1}"
-                this.season = season
-                this.episode = index + 1
-            }
-        }
-    }
-
-    private fun extractActors(document: Document): List<Actor> {
-        val castText = document.selectFirst(
-            ".entry-content, .post-content, article"
-        )?.text().orEmpty()
-
-        val castMatch = Regex("""(?i)(cast|starring)\s*[:\-]\s*([^.]+)""").find(castText)
-        return castMatch?.groupValues?.getOrNull(2)
-            ?.split(",", "/", "|")
-            ?.map { it.trim() }
-            ?.filter { it.isNotEmpty() }
-            ?.distinct()
-            ?.map { Actor(it) }
-            ?: emptyList()
     }
 
     private fun guessType(url: String, title: String, hasEpisodes: Boolean): TvType {
