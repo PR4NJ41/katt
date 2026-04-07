@@ -2,103 +2,91 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.fixUrl
 import com.lagradost.cloudstream3.utils.loadExtractor
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
 class KatProvider : MainAPI() {
-    override var mainUrl = "https://katmoviehd.page"
+    override var mainUrl = "https://new.katmoviehd.cymru"
     override var name = "Kat"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var lang = "hi"
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Latest",
-        "$mainUrl/movies/page/" to "Movies",
-        "$mainUrl/tvshows/page/" to "TV Shows",
+        "$mainUrl/category/tv-shows/" to "TV Shows",
+        "$mainUrl/category/movies/" to "Movies",
+        "$mainUrl/category/dual-audio/" to "Dual Audio",
     )
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest,
-    ): HomePageResponse {
-        val targetUrl = if (request.data.endsWith("/")) {
-            "${request.data}$page"
-        } else {
-            "${request.data.trimEnd('/')}/$page"
-        }
-        val document = app.get(targetUrl).document
-        val home = document
-            .select("article.item, .items .item, .result-item")
-            .mapNotNull { it.toSearchResult() }
-            .distinctBy { it.url }
-
-        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = buildPagedUrl(request.data, page)
+        val document = app.get(url).document
+        val items = document.toSearchResults()
+        return newHomePageResponse(
+            listOf(HomePageList(request.name, items)),
+            hasNext = hasNextPage(document)
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val encoded = URLEncoder.encode(query, "UTF-8")
         val document = app.get("$mainUrl/?s=$encoded").document
-        return document
-            .select(".result-item, article.item, .items .item")
-            .mapNotNull { it.toSearchResult() }
-            .distinctBy { it.url }
+        return document.toSearchResults()
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
+        val titleElement = document.selectFirst(
+            "h1.entry-title, h1.post-title, h1, meta[property=og:title]"
+        ) ?: return null
+        val title = (if (titleElement.tagName() == "meta") {
+            titleElement.attr("content")
+        } else {
+            titleElement.text()
+        }).substringBefore(" - KatMovieHD").trim().ifBlank { return null }
 
-        val title = document.selectFirst(".data h1, .sheader .data h1, h1")?.text()?.trim()
-            ?: return null
+        val descriptionElement = document.selectFirst(
+            "meta[name=description], meta[property=og:description], .entry-content p, .post-content p"
+        )
+        val description = descriptionElement?.run {
+            if (tagName() == "meta") attr("content") else text()
+        }?.trim()
+
         val poster = fixUrlNull(
-            document.selectFirst(".poster img, .sheader .poster img, .thumb img")?.attr("src")
-                ?: document.selectFirst(".poster img, .sheader .poster img, .thumb img")
-                    ?.attr("data-src")
+            document.selectFirst("meta[property=og:image]")?.attr("content")
+                ?: document.selectFirst(".post-thumb img, .entry img, .entry-content img, img.wp-post-image")
+                    ?.run { attr("src").ifBlank { attr("data-src") } }
         )
-        val background = fixUrlNull(
-            document.selectFirst(".g-item img, .backdrop img, .fanback img")?.attr("src")
-        )
-        val description = document.selectFirst(".wp-content p, .entry-content p, .contenido p")
-            ?.text()
-            ?.trim()
-        val tags = document.select(".sgeneros a, .sgeneros span, .genres a")
+
+        val year = Regex("""(19|20)\d{2}""").find(title)?.value?.toIntOrNull()
+        val tags = document.select(".tagcloud a, .post-meta a[rel=tag], .entry-tags a")
             .map { it.text().trim() }
             .filter { it.isNotEmpty() }
-        val year = document.selectFirst("#info .date, .extra .date, .data .date")
-            ?.text()
-            ?.filter { it.isDigit() }
-            ?.takeLast(4)
-            ?.toIntOrNull()
-        val actors = document.select("#cast .person, .persons .person")
-            .mapNotNull { person ->
-                val actorName = person.selectFirst(".name a, .data .name, .name")?.text()?.trim()
-                    ?: return@mapNotNull null
-                val image = fixUrlNull(person.selectFirst("img")?.attr("src"))
-                Actor(actorName, image)
+            .distinct()
+
+        val actors = extractActors(document)
+        val episodes = extractEpisodes(document)
+        val tvType = guessType(url, title, episodes.isNotEmpty())
+
+        return if (tvType == TvType.TvSeries) {
+            val finalEpisodes = if (episodes.isNotEmpty()) episodes else {
+                listOf(newEpisode(url.toJson()) { name = title })
             }
-
-        val episodes = document.select(".se-c .episodios li, #seasons .se-c li, li.mark-episode")
-            .mapNotNull { it.toEpisode() }
-
-        return if (episodes.isEmpty()) {
-            newMovieLoadResponse(title, url, TvType.Movie, url.toJson()) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, finalEpisodes) {
                 this.posterUrl = poster
-                this.backgroundPosterUrl = background
                 this.plot = description
                 this.year = year
                 this.tags = tags
                 addActors(actors)
             }
         } else {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            newMovieLoadResponse(title, url, TvType.Movie, url.toJson()) {
                 this.posterUrl = poster
-                this.backgroundPosterUrl = background
                 this.plot = description
                 this.year = year
                 this.tags = tags
@@ -113,69 +101,64 @@ class KatProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val pageUrl = try {
-            parseJson<String>(data)
-        } catch (_: Throwable) {
-            data
+        val url = data.removeSurrounding("\"")
+        val document = app.get(url).document
+
+        val candidateLinks = linkedSetOf<String>()
+
+        document.select("iframe[src]").forEach { frame: Element ->
+            frame.attr("src").takeIf { it.isNotBlank() }?.let { candidateLinks.add(fixUrl(it)) }
         }
 
-        val document = app.get(pageUrl).document
-        val playerOptions = document.select(".dooplay_player_option")
+        document.select(".entry-content a[href], .post-content a[href], article a[href], .download a[href]")
+            .forEach { anchor: Element ->
+                val href = anchor.attr("href").trim()
+                if (href.isBlank()) return@forEach
+                if (href.startsWith("#")) return@forEach
+                if (href.contains("telegram", true)) return@forEach
+                if (href.contains("/tag/")) return@forEach
+                if (href.contains("/category/")) return@forEach
+                if (href.contains("/wp-content/")) return@forEach
+                candidateLinks.add(fixUrl(href))
+            }
 
-        playerOptions.forEach { player ->
-            val post = player.attr("data-post")
-            val nume = player.attr("data-nume")
-            val type = player.attr("data-type").ifBlank { "movie" }
-
-            if (post.isBlank() || nume.isBlank()) return@forEach
-
-            val response = app.post(
-                "$mainUrl/wp-admin/admin-ajax.php",
-                data = mapOf(
-                    "action" to "doo_player_ajax",
-                    "post" to post,
-                    "nume" to nume,
-                    "type" to type,
-                ),
-                referer = pageUrl,
-            ).text
-
-            val embedUrl = response.substringAfter("src=\"", "").substringBefore("\"").ifBlank { null }
-                ?: response.substringAfter("data-src=\"", "").substringBefore("\"").ifBlank { null }
-                ?: Regex("""https?://[^"'\\s<>]+""").find(response)?.value
-
-            val fixed = embedUrl?.let { fixUrl(it) } ?: return@forEach
-            loadExtractor(fixed, pageUrl, subtitleCallback, callback)
+        candidateLinks.forEach { link ->
+            loadExtractor(link, url, subtitleCallback, callback)
         }
 
-        document.select("iframe").mapNotNull { it.attr("src").takeIf(String::isNotBlank) }.forEach {
-            loadExtractor(fixUrl(it), pageUrl, subtitleCallback, callback)
-        }
+        return candidateLinks.isNotEmpty()
+    }
 
-        return true
+    private fun Document.toSearchResults(): List<SearchResponse> {
+        return select("article, .post, .posts .post, .blog_item")
+            .mapNotNull { it.toSearchResult() }
+            .distinctBy { it.url }
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val href = selectFirst("a")?.attr("href")?.takeIf { it.isNotBlank() } ?: return null
-        val title = selectFirst("h3 a, .title a, .data h3 a, .data .title a, img")
-            ?.attr("title")
-            ?.takeIf { it.isNotBlank() }
-            ?: selectFirst("h3 a, .title a, .data h3 a, .data .title a")
-                ?.text()
-                ?.trim()
-            ?: selectFirst("img")?.attr("alt")?.trim()
+        val anchor = selectFirst("h2 a, h3 a, .entry-title a, .post-title a, a[rel=bookmark], a")
             ?: return null
-        val poster = fixUrlNull(
-            selectFirst("img")?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: selectFirst("img")?.attr("src")
-        )
-        val typeText = (
-            selectFirst(".type, .metadata, .flag")?.text()
-                ?: attr("class")
-                ?: href
-            ).lowercase()
+        val href = anchor.attr("href").trim().takeIf { it.startsWith("http") } ?: return null
 
-        return if (typeText.contains("tv") || typeText.contains("show") || href.contains("/tvshows/")) {
+        val title = anchor.text().trim()
+            .ifBlank {
+                selectFirst("img")?.attr("alt")?.trim().orEmpty()
+            }
+            .ifBlank { return null }
+
+        val poster = fixUrlNull(
+            selectFirst("img")?.let { img ->
+                img.attr("data-src").ifBlank {
+                    img.attr("src").ifBlank {
+                        img.attr("data-lazy-src")
+                    }
+                }
+            }
+        )
+
+        val type = guessType(href, title, false)
+
+        return if (type == TvType.TvSeries) {
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 this.posterUrl = poster
             }
@@ -186,25 +169,61 @@ class KatProvider : MainAPI() {
         }
     }
 
-    private fun Element.toEpisode(): Episode? {
-        val anchor = selectFirst("a") ?: return null
-        val href = anchor.attr("href").takeIf { it.isNotBlank() } ?: return null
-        val episodeName = selectFirst(".episodiotitle a, .episode-title, .numerando + a")
-            ?.text()
-            ?.trim()
-            ?.ifBlank { null }
-            ?: anchor.text().trim().ifBlank { null }
-        val meta = selectFirst(".numerando, .date")?.text().orEmpty()
-        val season = Regex("""(\d+)\s*x\s*(\d+)""").find(meta)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        val episode = Regex("""(\d+)\s*x\s*(\d+)""").find(meta)?.groupValues?.getOrNull(2)?.toIntOrNull()
-        val poster = fixUrlNull(selectFirst("img")?.attr("src"))
+    private fun extractEpisodes(document: Document): List<Episode> =
+        document.select(".entry-content a[href], .post-content a[href], article a[href]")
+            .mapNotNull { link ->
+                val text = link.text().trim()
+                val href = link.attr("href").trim()
+                if (href.isBlank() || !href.startsWith("http")) return@mapNotNull null
+                val match = Regex("""(?i)(?:s(?:eason)?\s*(\d+))?.*?(?:e(?:pisode)?\s*(\d+))""")
+                    .find(text)
+                    ?: return@mapNotNull null
 
-        return newEpisode(href.toJson()) {
-            this.name = episodeName
-            this.season = season
-            this.episode = episode
-            this.posterUrl = poster
+                newEpisode(href.toJson()) {
+                    name = text
+                    season = match.groupValues.getOrNull(1)?.toIntOrNull()
+                    episode = match.groupValues.getOrNull(2)?.toIntOrNull()
+                }
+            }
+            .distinctBy { "${it.name}:${it.season}:${it.episode}" }
+
+    private fun extractActors(document: Document): List<Actor> {
+        val castText = document.selectFirst(
+            ".entry-content, .post-content, article"
+        )?.text().orEmpty()
+
+        val castMatch = Regex("""(?i)(cast|starring)\s*[:\-]\s*([^.]+)""").find(castText)
+        return castMatch?.groupValues?.getOrNull(2)
+            ?.split(",", "/", "|")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.distinct()
+            ?.map { Actor(it) }
+            ?: emptyList()
+    }
+
+    private fun guessType(url: String, title: String, hasEpisodes: Boolean): TvType {
+        val lowered = "$url $title".lowercase()
+        return if (
+            hasEpisodes ||
+            lowered.contains("season") ||
+            lowered.contains("tv series") ||
+            lowered.contains("s0") ||
+            lowered.contains("/category/tv-shows/")
+        ) {
+            TvType.TvSeries
+        } else {
+            TvType.Movie
         }
+    }
+
+    private fun hasNextPage(document: Document): Boolean {
+        return document.selectFirst("link[rel=next], a.next, .next.page-numbers") != null
+    }
+
+    private fun buildPagedUrl(base: String, page: Int): String {
+        if (page <= 1) return base
+        return "${base.trimEnd('/')}/page/$page/"
     }
 
     private fun fixUrlNull(url: String?): String? {
