@@ -20,21 +20,22 @@
         "name": "ExampleProvider"
     },
     {
-        "iconUrl": "https://archive.org/download/mx-player-logo-450x450/mx-player-logo-450x450.png",
+        "iconUrl": "https://katmoviehd.page/images/katmoviehd-icon.png",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/PR4NJ41/katt",
-        "fileSize": 7301,
+        "fileSize": 22389,
         "status": 1,
-        "language": "en",
+        "language": "hi",
         "authors": [
-            "Weekday Dev"
+            "PR4NJ41"
         ],
         "tvTypes": [
-            "Movie"
+            "Movie",
+            "TvSeries"
         ],
         "version": 1,
         "internalName": "KatProvider",
-        "description": "Kat sample provider",
+        "description": "KatmovieHD provider",
         "url": "https://raw.githubusercontent.com/PR4NJ41/katt/builds/KatProvider.cs3",
         "name": "KatProvider"
     }
