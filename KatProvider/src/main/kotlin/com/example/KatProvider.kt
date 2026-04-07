@@ -443,44 +443,52 @@ class KatProvider : MainAPI() {
 
         val episodes = mutableListOf<EpisodeData>()
         
-        // Improved regex to capture complete episode objects with nested braces
+        // Extract the info block which contains all episodes
+        val infoContent = Regex(
+            """info:\{(.*?)\}(?:,type:|,error:|$)""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        ).find(infoBlock)?.groupValues?.getOrNull(1) ?: infoBlock
+        
+        // Match episode objects and extract complete content between braces
         val episodePattern = Regex(
-            """(\w+):\{([^{}]*?(?:\{[^{}]*\}[^{}]*?)*?)\}(?=,\w+:|,type:|\}(?!.*\{))""",
+            """(\w+):\{(name:"[^"]*"[^}]*)\}""",
             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
         )
         
-        val matches = episodePattern.findAll(infoBlock)
+        val matches = episodePattern.findAll(infoContent)
         for (match in matches) {
-            val episodeName = extractValueFromBlock(match.groupValues[2], "name") ?: continue
+            val episodeContent = match.groupValues.getOrNull(2) ?: continue
+            
+            // Extract name
+            val nameMatch = Regex("""name:"([^"]+)""").find(episodeContent)
+            val episodeName = nameMatch?.groupValues?.getOrNull(1)?.trim() ?: continue
             
             // Verify it's a valid episode (contains season/episode info)
             if (!Regex("""(?i)S\d{1,2}E\d{1,3}""").containsMatchIn(episodeName)) continue
             
-            val streamTapeId = extractValueFromBlock(match.groupValues[2], "streamtape_res")
-            val streamWishId = extractValueFromBlock(match.groupValues[2], "streamwish_res")
+            // Extract streamtape_res (can be anywhere in the object, order independent)
+            val streamTapeMatch = Regex("""streamtape_res:(?:"([^"]+)"|null)""").find(episodeContent)
+            val streamTapeId = streamTapeMatch?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+            
+            // Extract streamwish_res (can be anywhere in the object, order independent)
+            val streamWishMatch = Regex("""streamwish_res:(?:"([^"]+)"|null)""").find(episodeContent)
+            val streamWishId = streamWishMatch?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() && it != "null" }
             
             debugLog("Parsed episode: $episodeName st=$streamTapeId sw=$streamWishId")
             
             episodes.add(
                 EpisodeData(
                     playUrl = playUrl,
-                    fileName = episodeName.trim(),
-                    streamTapeId = streamTapeId?.takeIf { it != "null" && it.isNotBlank() },
-                    streamWishId = streamWishId?.takeIf { it != "null" && it.isNotBlank() },
-                    streamTapeUrl = streamTapeId?.takeIf { it != "null" && it.isNotBlank() }?.let { buildPlatformUrl(streamTapeBase, it) },
-                    streamWishUrl = streamWishId?.takeIf { it != "null" && it.isNotBlank() }?.let { buildPlatformUrl(streamWishBase, it) },
+                    fileName = episodeName,
+                    streamTapeId = streamTapeId,
+                    streamWishId = streamWishId,
+                    streamTapeUrl = streamTapeId?.let { buildPlatformUrl(streamTapeBase, it) },
+                    streamWishUrl = streamWishId?.let { buildPlatformUrl(streamWishBase, it) },
                 )
             )
         }
         
         return episodes
-    }
-    
-    private fun extractValueFromBlock(block: String, key: String): String? {
-        return Regex(
-            """$key\s*:\s*(?:"([^"]+)"|null)""",
-            RegexOption.IGNORE_CASE
-        ).find(block)?.groupValues?.getOrNull(1)?.trim()
     }
 
     private fun extractResolvedDataBlock(playText: String, id: Int): String? {
