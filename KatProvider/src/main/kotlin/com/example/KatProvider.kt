@@ -136,8 +136,9 @@ class KatProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         parseEpisodeData(data)?.let { episodeData ->
-            emitEpisodeLinks(episodeData, subtitleCallback, callback)
-            return episodeData.streamTapeId != null || episodeData.streamWishId != null
+            val resolvedEpisodeData = resolveEpisodeDataFromPlayPage(episodeData)
+            emitEpisodeLinks(resolvedEpisodeData, subtitleCallback, callback)
+            return resolvedEpisodeData.streamTapeId != null || resolvedEpisodeData.streamWishId != null
         }
 
         val loadData = parseLoadData(data)
@@ -393,29 +394,69 @@ class KatProvider : MainAPI() {
 
     private suspend fun extractManifestEpisodes(playUrl: String, referer: String): List<com.lagradost.cloudstream3.Episode> {
         val text = getText(playUrl, referer)
-        return Regex("""name:"([^"]+S\d{1,2}E\d{1,3}[^"]*)",([^}]*)\}""")
-            .findAll(text)
-            .mapNotNull { match ->
-                val fileName = match.groupValues[1]
-                val ids = match.groupValues[2]
-                val seasonEpisode = Regex("""(?i)S(\d{1,2})E(\d{1,3})""").find(fileName) ?: return@mapNotNull null
-                val episodeData = EpisodeData(
-                    playUrl = playUrl,
-                    fileName = fileName,
-                    streamTapeId = Regex("""streamtape_res:"([^"]+)"""").find(ids)?.groupValues?.getOrNull(1)
-                        ?.takeUnless { it.isBlank() || it == "null" },
-                    streamWishId = Regex("""streamwish_res:"([^"]+)"""").find(ids)?.groupValues?.getOrNull(1)
-                        ?.takeUnless { it.isBlank() || it == "null" },
-                )
-
+        return parseEpisodeDataFromPlayPage(text, playUrl)
+            .mapNotNull { episodeData ->
+                val seasonEpisode = Regex("""(?i)S(\d{1,2})E(\d{1,3})""").find(episodeData.fileName) ?: return@mapNotNull null
                 newEpisode(episodeData.toJson()) {
-                    name = Regex("""(?i)S\d{1,2}E\d{1,3}""").find(fileName)?.value ?: fileName
+                    name = Regex("""(?i)S\d{1,2}E\d{1,3}""").find(episodeData.fileName)?.value ?: episodeData.fileName
                     season = seasonEpisode.groupValues[1].toIntOrNull()
                     episode = seasonEpisode.groupValues[2].toIntOrNull()
                 }
             }
             .distinctBy { "${it.season}:${it.episode}" }
             .toList()
+    }
+
+    private suspend fun resolveEpisodeDataFromPlayPage(episodeData: EpisodeData): EpisodeData {
+        val playText = runCatching { getText(episodeData.playUrl, episodeData.playUrl) }.getOrNull() ?: return episodeData
+        val token = Regex("""(?i)S\d{1,2}E\d{1,3}""").find(episodeData.fileName)?.value?.lowercase(Locale.ROOT)
+        val target = episodeData.fileName.trim().lowercase(Locale.ROOT)
+        val candidates = parseEpisodeDataFromPlayPage(playText, episodeData.playUrl)
+
+        val matched = candidates.firstOrNull { candidate ->
+            val normalized = candidate.fileName.trim().lowercase(Locale.ROOT)
+            normalized == target ||
+                normalized.contains(target) ||
+                target.contains(normalized) ||
+                (token != null && normalized.contains(token))
+        } ?: return episodeData
+
+        debugLog(
+            "resolveEpisodeDataFromPlayPage file=${episodeData.fileName} matched=${matched.fileName} " +
+                "streamTape=${matched.streamTapeId?.shortId()} streamWish=${matched.streamWishId?.shortId()}"
+        )
+        return episodeData.copy(
+            streamTapeId = matched.streamTapeId ?: episodeData.streamTapeId,
+            streamWishId = matched.streamWishId ?: episodeData.streamWishId
+        )
+    }
+
+    private fun parseEpisodeDataFromPlayPage(playText: String, playUrl: String): List<EpisodeData> {
+        return Regex("""\{name:"([^"]+)"([^{}]*?)\}""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .findAll(playText)
+            .mapNotNull { match ->
+                val fileName = match.groupValues[1].trim()
+                if (!Regex("""(?i)S\d{1,2}E\d{1,3}""").containsMatchIn(fileName)) return@mapNotNull null
+                val block = match.groupValues[2]
+                val streamTapeId = extractIdFromBlock(block, "streamtape_res")
+                val streamWishId = extractIdFromBlock(block, "streamwish_res")
+                EpisodeData(
+                    playUrl = playUrl,
+                    fileName = fileName,
+                    streamTapeId = streamTapeId,
+                    streamWishId = streamWishId
+                )
+            }
+            .toList()
+    }
+
+    private fun extractIdFromBlock(block: String, key: String): String? {
+        val raw = Regex("""$key\s*:\s*(?:"([^"]+)"|null)""", RegexOption.IGNORE_CASE)
+            .find(block)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+        return raw?.takeUnless { it.isBlank() || it == "null" }
     }
 
     private suspend fun loadLinksFromHtml(
@@ -544,6 +585,12 @@ class KatProvider : MainAPI() {
         return this.take(limit).replace("\n", " ").replace("\r", " ")
     }
 
+    private fun String.shortId(): String {
+        if (isBlank()) return "blank"
+        if (length <= 8) return this
+        return "${take(4)}...${takeLast(4)}"
+    }
+
     private fun hasNextPage(document: Document): Boolean {
         return document.selectFirst("link[rel=next], a.next, .next.page-numbers") != null
     }
@@ -625,7 +672,7 @@ class KatProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ) {
         debugLog(
-            "emitEpisodeLinks playUrl=${episodeData.playUrl} streamTapeId=${episodeData.streamTapeId != null} streamWishId=${episodeData.streamWishId != null}"
+            "emitEpisodeLinks playUrl=${episodeData.playUrl} streamTapeId=${episodeData.streamTapeId?.shortId()} streamWishId=${episodeData.streamWishId?.shortId()}"
         )
         episodeData.streamTapeId?.let { id ->
             loadExtractor("https://streamtape.com/e/$id", episodeData.playUrl, subtitleCallback, callback)
