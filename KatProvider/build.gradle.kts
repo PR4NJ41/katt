@@ -3,14 +3,11 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
-// Use an integer for version numbers
 version = 1
 
 cloudstream {
-    // All of these properties are optional, you can safely remove any of them.
-
-    description = "Kat sample provider"
-    authors = listOf("Weekday Dev")
+    description = "KatmovieHD provider"
+    authors = listOf("PR4NJ41")
 
     /**
     * Status int as one of the following:
@@ -19,15 +16,11 @@ cloudstream {
     * 2: Slow
     * 3: Beta-only
     **/
-    status = 1 // Will be 3 if unspecified
-
-    tvTypes = listOf("Movie")
-
+    status = 1
+    tvTypes = listOf("Movie", "TvSeries")
     requiresResources = true
-    language = "en"
-
-    // Random CC logo I found
-    iconUrl = "https://archive.org/download/mx-player-logo-450x450/mx-player-logo-450x450.png"
+    language = "hi"
+    iconUrl = "https://katmoviehd.page/images/katmoviehd-icon.png"
 }
 
 android {
