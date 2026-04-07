@@ -392,7 +392,7 @@ class KatProvider : MainAPI() {
 
     private suspend fun extractManifestEpisodes(playUrl: String, referer: String): List<com.lagradost.cloudstream3.Episode> {
         val text = getText(playUrl, referer)
-        return Regex("""name:"([^"]+S\d{1,2}E\d{1,3}[^"]*)",([^}]*)}""")
+        return Regex("""name:"([^"]+S\d{1,2}E\d{1,3}[^"]*)",([^}]*)\}""")
             .findAll(text)
             .mapNotNull { match ->
                 val fileName = match.groupValues[1]
