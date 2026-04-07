@@ -23,7 +23,7 @@ class KatProvider : MainAPI() {
     override val hasMainPage = true
 
     private val apiUrl = "$mainUrl/wp-json/wp/v2"
-    private val debugNetwork = true
+    private val debugNetwork = false
     private val siteHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
