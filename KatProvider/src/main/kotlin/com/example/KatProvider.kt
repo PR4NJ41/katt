@@ -441,24 +441,46 @@ class KatProvider : MainAPI() {
         val streamTapeBase = extractPlatformLink(linksBlock, "streamtape_res") ?: defaultStreamTapeBase
         val streamWishBase = extractPlatformLink(linksBlock, "streamwish_res") ?: defaultStreamWishBase
 
-        return Regex("""\w+:\{name:"([^"]+)"([^{}]*?)\}""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-            .findAll(infoBlock)
-            .mapNotNull { match ->
-                val fileName = match.groupValues[1].trim()
-                if (!Regex("""(?i)S\d{1,2}E\d{1,3}""").containsMatchIn(fileName)) return@mapNotNull null
-                val block = match.groupValues[2]
-                val streamTapeId = extractIdFromBlock(block, "streamtape_res")
-                val streamWishId = extractIdFromBlock(block, "streamwish_res")
+        val episodes = mutableListOf<EpisodeData>()
+        
+        // Improved regex to capture complete episode objects with nested braces
+        val episodePattern = Regex(
+            """(\w+):\{([^{}]*?(?:\{[^{}]*\}[^{}]*?)*?)\}(?=,\w+:|,type:|\}(?!.*\{))""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+        
+        val matches = episodePattern.findAll(infoBlock)
+        for (match in matches) {
+            val episodeName = extractValueFromBlock(match.groupValues[2], "name") ?: continue
+            
+            // Verify it's a valid episode (contains season/episode info)
+            if (!Regex("""(?i)S\d{1,2}E\d{1,3}""").containsMatchIn(episodeName)) continue
+            
+            val streamTapeId = extractValueFromBlock(match.groupValues[2], "streamtape_res")
+            val streamWishId = extractValueFromBlock(match.groupValues[2], "streamwish_res")
+            
+            debugLog("Parsed episode: $episodeName st=$streamTapeId sw=$streamWishId")
+            
+            episodes.add(
                 EpisodeData(
                     playUrl = playUrl,
-                    fileName = fileName,
-                    streamTapeId = streamTapeId,
-                    streamWishId = streamWishId,
-                    streamTapeUrl = streamTapeId?.let { buildPlatformUrl(streamTapeBase, it) },
-                    streamWishUrl = streamWishId?.let { buildPlatformUrl(streamWishBase, it) },
+                    fileName = episodeName.trim(),
+                    streamTapeId = streamTapeId?.takeIf { it != "null" && it.isNotBlank() },
+                    streamWishId = streamWishId?.takeIf { it != "null" && it.isNotBlank() },
+                    streamTapeUrl = streamTapeId?.takeIf { it != "null" && it.isNotBlank() }?.let { buildPlatformUrl(streamTapeBase, it) },
+                    streamWishUrl = streamWishId?.takeIf { it != "null" && it.isNotBlank() }?.let { buildPlatformUrl(streamWishBase, it) },
                 )
-            }
-            .toList()
+            )
+        }
+        
+        return episodes
+    }
+    
+    private fun extractValueFromBlock(block: String, key: String): String? {
+        return Regex(
+            """$key\s*:\s*(?:"([^"]+)"|null)""",
+            RegexOption.IGNORE_CASE
+        ).find(block)?.groupValues?.getOrNull(1)?.trim()
     }
 
     private fun extractResolvedDataBlock(playText: String, id: Int): String? {
@@ -482,15 +504,6 @@ class KatProvider : MainAPI() {
         return "$normalizedBase$id"
     }
 
-    private fun extractIdFromBlock(block: String, key: String): String? {
-        val raw = Regex("""$key\s*:\s*(?:"([^"]+)"|null)""", RegexOption.IGNORE_CASE)
-            .find(block)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-        return raw?.takeUnless { it.isBlank() || it == "null" }
-    }
-
     private suspend fun loadLinksFromHtml(
         contentHtml: String,
         referer: String,
@@ -500,25 +513,27 @@ class KatProvider : MainAPI() {
         val document = Jsoup.parseBodyFragment(contentHtml, referer)
         val candidateLinks = linkedSetOf<String>()
 
-        document.select("iframe[src]").forEach { frame: Element ->
+        val iframes = document.select("iframe[src]")
+        for (frame in iframes) {
             frame.absUrl("src").ifBlank { frame.attr("src").trim() }
                 .takeIf { it.isNotBlank() }
                 ?.let { candidateLinks.add(normalizeUrl(it)) }
         }
 
-        document.select("a[href]").forEach { anchor: Element ->
+        val anchors = document.select("a[href]")
+        for (anchor in anchors) {
             val href = anchor.absUrl("href").ifBlank { anchor.attr("href").trim() }
-            if (href.isBlank()) return@forEach
-            if (href.startsWith("#")) return@forEach
-            if (href.contains("telegram", true)) return@forEach
-            if (href.contains("/tag/")) return@forEach
-            if (href.contains("/category/")) return@forEach
-            if (href.contains("/wp-content/")) return@forEach
+            if (href.isBlank()) continue
+            if (href.startsWith("#")) continue
+            if (href.contains("telegram", true)) continue
+            if (href.contains("/tag/")) continue
+            if (href.contains("/category/")) continue
+            if (href.contains("/wp-content/")) continue
             candidateLinks.add(normalizeUrl(href))
         }
 
         debugLog("loadLinksFromHtml referer=$referer candidateLinks=${candidateLinks.size}")
-        candidateLinks.forEach { link ->
+        for (link in candidateLinks) {
             if (!loadKmhdLink(link, referer, subtitleCallback, callback)) {
                 loadExtractor(link, referer, subtitleCallback, callback)
             }
@@ -645,24 +660,17 @@ class KatProvider : MainAPI() {
                 val text = getText(link, referer)
                 val releaseName = Regex("""name:"([^"]+)"""").find(text)?.groupValues?.getOrNull(1)
                 val quality = getQualityFromName(releaseName)
-                val streamtapeIds = Regex("""streamtape_res:"([^"]+)"""").findAll(text)
-                    .map { it.groupValues[1] }
-                    .filter { it.isNotBlank() && it != "null" }
-                    .toSet()
-                val streamwishIds = Regex("""streamwish_res:"([^"]+)"""").findAll(text)
-                    .map { it.groupValues[1] }
-                    .filter { it.isNotBlank() && it != "null" }
-                    .toSet()
-                debugLog("KMHD play parsed link=$link streamtape=${streamtapeIds.size} streamwish=${streamwishIds.size} quality=$quality")
-
-                streamtapeIds.forEach { id ->
-                    loadExtractor("https://streamtape.com/e/$id", referer, subtitleCallback, callback)
-                }
-                streamwishIds.forEach { id ->
-                    loadExtractor("https://hglink.to/e/$id", referer, subtitleCallback, callback)
+                
+                // Parse episodes from the play page structure
+                val episodes = parseEpisodeDataFromPlayPage(text, link)
+                debugLog("KMHD play parsed link=$link episodes=${episodes.size} quality=$quality")
+                
+                // Load all episode links
+                for (episodeData in episodes) {
+                    emitEpisodeLinks(episodeData, subtitleCallback, callback)
                 }
 
-                streamtapeIds.isNotEmpty() || streamwishIds.isNotEmpty()
+                episodes.isNotEmpty()
             }
 
             link.contains("/file/") -> {
@@ -680,7 +688,7 @@ class KatProvider : MainAPI() {
                     .toSet()
                 debugLog("KMHD file parsed link=$link directLinks=${directLinks.size}")
 
-                directLinks.forEach { out ->
+                for (out in directLinks) {
                     loadExtractor(out, referer, subtitleCallback, callback)
                 }
                 false
@@ -709,12 +717,13 @@ class KatProvider : MainAPI() {
                 "streamTapeUrl=${episodeData.streamTapeUrl} streamWishUrl=${episodeData.streamWishUrl}"
         )
         val links = linkedSetOf<String>()
+        // Use pre-built URLs if available, fallback to reconstructing from IDs
         episodeData.streamTapeUrl?.let { links.add(it) }
+            ?: episodeData.streamTapeId?.let { links.add(buildPlatformUrl(defaultStreamTapeBase, it)) }
         episodeData.streamWishUrl?.let { links.add(it) }
-        episodeData.streamTapeId?.let { links.add(buildPlatformUrl(defaultStreamTapeBase, it)) }
-        episodeData.streamWishId?.let { links.add(buildPlatformUrl(defaultStreamWishBase, it)) }
+            ?: episodeData.streamWishId?.let { links.add(buildPlatformUrl(defaultStreamWishBase, it)) }
 
-        links.forEach { link ->
+        for (link in links) {
             loadExtractor(link, episodeData.playUrl, subtitleCallback, callback)
         }
     }

@@ -9,11 +9,20 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class KatPlugin: Plugin() {
     private var activity: AppCompatActivity? = null
 
+    companion object {
+        private var isLoaded = false
+        private val katProviderInstance by lazy { KatProvider() }
+    }
+
     override fun load(context: Context) {
+        // Prevent duplicate loading
+        if (isLoaded) return
+        isLoaded = true
+
         activity = context as? AppCompatActivity
 
-        // All providers should be added in this manner
-        registerMainAPI(KatProvider())
+        // All providers should be added in this manner - use cached instance
+        registerMainAPI(katProviderInstance)
 
         openSettings = {
             val frag = KatFragment(this)
