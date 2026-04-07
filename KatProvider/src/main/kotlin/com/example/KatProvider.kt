@@ -65,9 +65,24 @@ class KatProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        Log.d("KatProvider", "load() called with url=$url")
+        
+        // Check if URL itself is a play URL
+        val isDirectPlayUrl = url.contains("links.kmhd.eu/play?")
+        
         val initialData = parseLoadData(url)
         val targetUrl = initialData?.url ?: url
-        val document = runCatching { getDocument(targetUrl) }.getOrNull()
+        
+        Log.d("KatProvider", "load() isDirectPlayUrl=$isDirectPlayUrl targetUrl=$targetUrl")
+        
+        // For play URLs, fetch content early to extract title
+        val playPageText = if (isDirectPlayUrl) {
+            runCatching { getText(targetUrl, null) }.getOrNull()
+        } else {
+            null
+        }
+        
+        val document = if (isDirectPlayUrl) null else runCatching { getDocument(targetUrl) }.getOrNull()
         val post = if (document == null) {
             initialData?.postId?.let { getPostById(it) }
                 ?: initialData?.slug?.let { getPostBySlug(it) }
@@ -80,10 +95,23 @@ class KatProvider : MainAPI() {
             "h1.entry-title, h1.post-title, h1, meta[property=og:title]"
         )?.let { if (it.tagName() == "meta") it.attr("content") else it.text() }
 
-        val title = (pageTitle
-            ?: post?.renderedTitle()
-            ?: ""
-            ).substringBefore(" - KatMovieHD").trim().ifBlank { return null }
+        val title = if (isDirectPlayUrl && playPageText != null) {
+            // For play URLs, extract title from the embedded data
+            Regex("""name:"([^"]+)""").find(playPageText)?.groupValues?.getOrNull(1)
+                ?.substringBefore(".10bit")
+                ?.substringBefore(".1080p")
+                ?.substringBefore(".720p")
+                ?.trim()
+                ?.ifBlank { null }
+                ?: "Unknown Series"
+        } else {
+            (pageTitle
+                ?: post?.renderedTitle()
+                ?: ""
+                ).substringBefore(" - KatMovieHD").trim()
+        }
+        
+        if (title.isBlank()) return null
 
         val description = document?.selectFirst(
             "meta[name=description], meta[property=og:description], .entry-content p, .post-content p"
@@ -106,13 +134,31 @@ class KatProvider : MainAPI() {
             contentHtml = contentHtml.ifBlank { null }
         )
 
-        val playLink = extractPlayLink(contentHtml)
-        val manifestEpisodes = playLink?.let { extractManifestEpisodes(it, targetUrl) }.orEmpty()
-        val episodes = if (manifestEpisodes.isNotEmpty()) {
-            manifestEpisodes
+        // For direct play URLs, get episodes directly from the play page
+        val episodes = if (isDirectPlayUrl && playPageText != null) {
+            Log.d("KatProvider", "load() Processing direct play URL, parsing episodes...")
+            val parsedEpisodes = parseEpisodeDataFromPlayPage(playPageText, targetUrl)
+            Log.d("KatProvider", "load() Parsed ${parsedEpisodes.size} episodes from play URL")
+            parsedEpisodes.mapNotNull { episodeData ->
+                val seasonEpisode = Regex("""(?i)S(\d{1,2})E(\d{1,3})""").find(episodeData.fileName) ?: return@mapNotNull null
+                newEpisode(episodeData.toJson()) {
+                    name = episodeData.fileName
+                    season = seasonEpisode.groupValues[1].toIntOrNull()
+                    episode = seasonEpisode.groupValues[2].toIntOrNull()
+                }
+            }
         } else {
-            extractEpisodes(contentHtml, title, loadData)
+            // For normal pages, extract play link first
+            val playLink = extractPlayLink(contentHtml)
+            val manifestEpisodes = playLink?.let { extractManifestEpisodes(it, targetUrl) }.orEmpty()
+            if (manifestEpisodes.isNotEmpty()) {
+                manifestEpisodes
+            } else {
+                extractEpisodes(contentHtml, title, loadData)
+            }
         }
+        
+        Log.d("KatProvider", "load() Final episode count: ${episodes.size}")
         val tvType = if (episodes.isNotEmpty()) TvType.TvSeries else (post?.let { guessType(it) } ?: guessType(targetUrl, title))
 
         return if (tvType == TvType.TvSeries) {
