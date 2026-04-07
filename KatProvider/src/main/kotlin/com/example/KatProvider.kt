@@ -495,24 +495,52 @@ class KatProvider : MainAPI() {
     }
 
     private suspend fun getText(url: String, referer: String? = null): String {
-        return getResponse(url, referer).text
+        val text = getResponse(url, referer).text
+        debugLog("BODY url=$url len=${text.length} preview=${text.preview()}")
+        return text
     }
 
     private suspend fun getJsonText(url: String, referer: String? = null): String {
-        return app.get(
-            url,
-            headers = headersFor(referer, jsonHeaders)
-        ).text
+        debugLog("GET JSON url=$url referer=${referer ?: "-"}")
+        val text = try {
+            app.get(
+                url,
+                headers = headersFor(referer, jsonHeaders)
+            ).text
+        } catch (t: Throwable) {
+            errorLog("GET JSON FAILED url=$url referer=${referer ?: "-"}", t)
+            throw t
+        }
+        debugLog("JSON BODY url=$url len=${text.length} preview=${text.preview()}")
+        return text
     }
 
-    private suspend fun getResponse(url: String, referer: String? = null) = app.get(
-        url,
-        headers = headersFor(referer, siteHeaders),
-        referer = referer
-    )
+    private suspend fun getResponse(url: String, referer: String? = null) = try {
+        debugLog("GET url=$url referer=${referer ?: "-"}")
+        app.get(
+            url,
+            headers = headersFor(referer, siteHeaders),
+            referer = referer
+        )
+    } catch (t: Throwable) {
+        errorLog("GET FAILED url=$url referer=${referer ?: "-"}", t)
+        throw t
+    }
 
     private fun headersFor(referer: String?, base: Map<String, String>): Map<String, String> {
         return if (referer.isNullOrBlank()) base else base + mapOf("Referer" to referer)
+    }
+
+    private fun debugLog(message: String) {
+        if (debugNetwork) Log.d("KatProvider", message)
+    }
+
+    private fun errorLog(message: String, throwable: Throwable) {
+        if (debugNetwork) Log.e("KatProvider", message, throwable)
+    }
+
+    private fun String.preview(limit: Int = 200): String {
+        return this.take(limit).replace("\n", " ").replace("\r", " ")
     }
 
     private fun hasNextPage(document: Document): Boolean {
