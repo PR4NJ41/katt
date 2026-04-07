@@ -67,7 +67,7 @@ class KatProvider : MainAPI() {
 
         val year = Regex("""(19|20)\d{2}""").find(title)?.value?.toIntOrNull()
         val episodes = extractEpisodes(document, title)
-        val tvType = guessType(url, title, episodes.isNotEmpty())
+        val tvType = if (episodes.isNotEmpty()) TvType.TvSeries else TvType.Movie
 
         return if (tvType == TvType.TvSeries) {
             val finalEpisodes = if (episodes.isNotEmpty()) episodes else {
@@ -150,7 +150,7 @@ class KatProvider : MainAPI() {
             }
         )
 
-        val type = guessType(href, title, false)
+        val type = guessType(href, title)
 
         return if (type == TvType.TvSeries) {
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
@@ -193,10 +193,9 @@ class KatProvider : MainAPI() {
             .distinctBy { "${it.season}:${it.episode}:${it.data}" }
     }
 
-    private fun guessType(url: String, title: String, hasEpisodes: Boolean): TvType {
+    private fun guessType(url: String, title: String): TvType {
         val lowered = "$url $title".lowercase()
         return if (
-            hasEpisodes ||
             lowered.contains("season") ||
             lowered.contains("tv series") ||
             lowered.contains("s0") ||
