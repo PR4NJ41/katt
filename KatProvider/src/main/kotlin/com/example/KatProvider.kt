@@ -5,7 +5,9 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.fixUrl
+import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -71,7 +73,7 @@ class KatProvider : MainAPI() {
             .distinct()
 
         val actors = extractActors(document)
-        val episodes = extractEpisodes(document)
+        val episodes = extractEpisodes(document, title)
         val tvType = guessType(url, title, episodes.isNotEmpty())
 
         return if (tvType == TvType.TvSeries) {
@@ -172,23 +174,56 @@ class KatProvider : MainAPI() {
         }
     }
 
-    private fun extractEpisodes(document: Document): List<Episode> =
-        document.select(".entry-content a[href], .post-content a[href], article a[href]")
+    private fun extractEpisodes(document: Document, title: String): List<Episode> {
+        val parsedEpisodes = document.select(".entry-content a[href], .post-content a[href], article a[href]")
             .mapNotNull { link ->
                 val text = link.text().trim()
                 val href = link.attr("href").trim()
                 if (href.isBlank() || !href.startsWith("http")) return@mapNotNull null
-                val match = Regex("""(?i)(?:s(?:eason)?\s*(\d+))?.*?(?:e(?:pisode)?\s*(\d+))""")
-                    .find(text)
+
+                val match = Regex(
+                    """(?i)(?:s(?:eason)?\s*(\d+))?[^a-z0-9]*(?:e(?:pisode)?\s*|ep\s*|e)(\d{1,3})|(\d{1,2})x(\d{1,3})"""
+                ).find(text)
+                    ?: Regex(
+                        """(?i)(?:s(?:eason)?\s*(\d+))?[^a-z0-9]*(?:e(?:pisode)?\s*|ep\s*|e)(\d{1,3})|(\d{1,2})x(\d{1,3})"""
+                    ).find(href)
+                    ?: return@mapNotNull null
+
+                val seasonNumber = match.groupValues.getOrNull(1)?.toIntOrNull()
+                    ?: match.groupValues.getOrNull(3)?.toIntOrNull()
+                    ?: extractSeasonFromTitle(title)
+                val episodeNumber = match.groupValues.getOrNull(2)?.toIntOrNull()
+                    ?: match.groupValues.getOrNull(4)?.toIntOrNull()
                     ?: return@mapNotNull null
 
                 newEpisode(href.toJson()) {
-                    name = text
-                    season = match.groupValues.getOrNull(1)?.toIntOrNull()
-                    episode = match.groupValues.getOrNull(2)?.toIntOrNull()
+                    name = text.ifBlank { "Episode $episodeNumber" }
+                    season = seasonNumber
+                    episode = episodeNumber
                 }
             }
-            .distinctBy { "${it.name}:${it.season}:${it.episode}" }
+            .distinctBy { "${it.season}:${it.episode}:${it.data}" }
+
+        if (parsedEpisodes.size > 1) return parsedEpisodes
+
+        val fallbackLinks = document.select(".entry-content a[href], .post-content a[href], article a[href]")
+            .map { it.attr("href").trim() }
+            .filter { it.contains("links.kmhd.eu/file/") || it.contains("links.kmhd.eu/play?") }
+            .distinct()
+
+        if (!title.contains("all episodes", ignoreCase = true) || fallbackLinks.size <= 1) {
+            return parsedEpisodes
+        }
+
+        val season = extractSeasonFromTitle(title)
+        return fallbackLinks.mapIndexed { index, href ->
+            newEpisode(href.toJson()) {
+                name = "Episode ${index + 1}"
+                this.season = season
+                this.episode = index + 1
+            }
+        }
+    }
 
     private fun extractActors(document: Document): List<Actor> {
         val castText = document.selectFirst(
@@ -244,6 +279,8 @@ class KatProvider : MainAPI() {
         return when {
             link.contains("/play?") -> {
                 val text = app.get(link, referer = referer).text
+                val releaseName = Regex("""name:"([^"]+)"""").find(text)?.groupValues?.getOrNull(1)
+                val quality = getQualityFromName(releaseName)
                 val streamtapeIds = Regex("""streamtape_res:"([^"]+)"""").findAll(text)
                     .map { it.groupValues[1] }
                     .filter { it.isNotBlank() && it != "null" }
@@ -254,10 +291,28 @@ class KatProvider : MainAPI() {
                     .toSet()
 
                 streamtapeIds.forEach { id ->
-                    loadExtractor("https://streamtape.com/e/$id", referer, subtitleCallback, callback)
+                    callback(
+                        newExtractorLink(
+                            source = "StreamTape",
+                            name = "StreamTape",
+                            url = "https://streamtape.com/e/$id"
+                        ) {
+                            this.referer = referer
+                            this.quality = quality
+                        }
+                    )
                 }
                 streamwishIds.forEach { id ->
-                    loadExtractor("https://hglink.to/e/$id", referer, subtitleCallback, callback)
+                    callback(
+                        newExtractorLink(
+                            source = "StreamWish",
+                            name = "StreamWish",
+                            url = "https://hglink.to/e/$id"
+                        ) {
+                            this.referer = referer
+                            this.quality = quality
+                        }
+                    )
                 }
 
                 streamtapeIds.isNotEmpty() || streamwishIds.isNotEmpty()
@@ -285,5 +340,10 @@ class KatProvider : MainAPI() {
 
             else -> false
         }
+    }
+
+    private fun extractSeasonFromTitle(title: String): Int? {
+        return Regex("""(?i)season\s*(\d+)""").find(title)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: Regex("""(?i)\bs(\d{1,2})\b""").find(title)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 }
