@@ -10,7 +10,7 @@ cloudstream {
     // All of these properties are optional, you can safely remove any of them.
 
     description = "Kat sample provider"
-    authors = listOf("Weekday")
+    authors = listOf("Weekday Dev")
 
     /**
     * Status int as one of the following:
