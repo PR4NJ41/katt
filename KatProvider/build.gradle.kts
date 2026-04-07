@@ -3,7 +3,7 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
-version = 2
+version = 3
 
 cloudstream {
     description = "KatmovieHD provider"
