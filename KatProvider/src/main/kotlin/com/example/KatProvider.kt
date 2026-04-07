@@ -1,6 +1,7 @@
 package com.example
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.fixUrl
@@ -66,8 +67,10 @@ class KatProvider : MainAPI() {
         )
 
         val year = Regex("""(19|20)\d{2}""").find(title)?.value?.toIntOrNull()
-        val episodes = extractEpisodes(document, title)
-        val tvType = if (episodes.isNotEmpty()) TvType.TvSeries else TvType.Movie
+        val playLink = extractPlayLink(document)
+        val manifestEpisodes = playLink?.let { extractManifestEpisodes(it, url) }.orEmpty()
+        val episodes = if (manifestEpisodes.isNotEmpty()) manifestEpisodes else extractEpisodes(document, title)
+        val tvType = if (episodes.isNotEmpty()) TvType.TvSeries else guessType(url, title)
 
         return if (tvType == TvType.TvSeries) {
             val finalEpisodes = if (episodes.isNotEmpty()) episodes else {
@@ -93,6 +96,11 @@ class KatProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
+        parseEpisodeData(data)?.let { episodeData ->
+            emitEpisodeLinks(episodeData, callback)
+            return episodeData.streamTapeId != null || episodeData.streamWishId != null
+        }
+
         val url = data.removeSurrounding("\"")
         val document = app.get(url).document
 
@@ -191,6 +199,43 @@ class KatProvider : MainAPI() {
                 }
             }
             .distinctBy { "${it.season}:${it.episode}:${it.data}" }
+    }
+
+    private fun extractPlayLink(document: Document): String? {
+        return document.select(".entry-content a[href], .post-content a[href], article a[href], .download a[href]")
+            .mapNotNull { link ->
+                link.attr("href").trim()
+                    .takeIf { it.contains("links.kmhd.eu/play?") }
+                    ?.let { fixUrl(it) }
+            }
+            .firstOrNull()
+    }
+
+    private suspend fun extractManifestEpisodes(playUrl: String, referer: String): List<Episode> {
+        val text = app.get(playUrl, referer = referer).text
+        return Regex("""name:"([^"]+S\d{1,2}E\d{1,3}[^"]*)",([^}]*)}""")
+            .findAll(text)
+            .mapNotNull { match ->
+                val fileName = match.groupValues[1]
+                val ids = match.groupValues[2]
+                val seasonEpisode = Regex("""(?i)S(\d{1,2})E(\d{1,3})""").find(fileName) ?: return@mapNotNull null
+                val episodeData = EpisodeData(
+                    playUrl = playUrl,
+                    fileName = fileName,
+                    streamTapeId = Regex("""streamtape_res:"([^"]+)"""").find(ids)?.groupValues?.getOrNull(1)
+                        ?.takeUnless { it.isBlank() || it == "null" },
+                    streamWishId = Regex("""streamwish_res:"([^"]+)"""").find(ids)?.groupValues?.getOrNull(1)
+                        ?.takeUnless { it.isBlank() || it == "null" },
+                )
+
+                newEpisode(episodeData.toJson()) {
+                    name = Regex("""(?i)S\d{1,2}E\d{1,3}""").find(fileName)?.value ?: fileName
+                    season = seasonEpisode.groupValues[1].toIntOrNull()
+                    episode = seasonEpisode.groupValues[2].toIntOrNull()
+                }
+            }
+            .distinctBy { "${it.season}:${it.episode}" }
+            .toList()
     }
 
     private fun guessType(url: String, title: String): TvType {
@@ -294,8 +339,52 @@ class KatProvider : MainAPI() {
         }
     }
 
+    private fun parseEpisodeData(data: String): EpisodeData? {
+        return runCatching { parseJson<EpisodeData>(data) }.getOrNull()
+    }
+
+    private suspend fun emitEpisodeLinks(
+        episodeData: EpisodeData,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val quality = getQualityFromName(episodeData.fileName)
+
+        episodeData.streamTapeId?.let { id ->
+            callback(
+                newExtractorLink(
+                    source = "StreamTape",
+                    name = "StreamTape",
+                    url = "https://streamtape.com/e/$id"
+                ) {
+                    this.referer = episodeData.playUrl
+                    this.quality = quality
+                }
+            )
+        }
+
+        episodeData.streamWishId?.let { id ->
+            callback(
+                newExtractorLink(
+                    source = "StreamWish",
+                    name = "StreamWish",
+                    url = "https://hglink.to/e/$id"
+                ) {
+                    this.referer = episodeData.playUrl
+                    this.quality = quality
+                }
+            )
+        }
+    }
+
     private fun extractSeasonFromTitle(title: String): Int? {
         return Regex("""(?i)season\s*(\d+)""").find(title)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("""(?i)\bs(\d{1,2})\b""").find(title)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
+
+    data class EpisodeData(
+        val playUrl: String,
+        val fileName: String,
+        val streamTapeId: String? = null,
+        val streamWishId: String? = null,
+    )
 }
