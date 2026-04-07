@@ -18,5 +18,25 @@
         "description": "Lorem ipsum",
         "url": "https://raw.githubusercontent.com/PR4NJ41/katt/builds/ExampleProvider.cs3",
         "name": "ExampleProvider"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/PR4NJ41/katt",
+        "fileSize": 7301,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "Cloudburst",
+            "Luna712"
+        ],
+        "tvTypes": [
+            "Movie"
+        ],
+        "version": 1,
+        "internalName": "KatProvider",
+        "description": "Kat sample provider",
+        "url": "https://raw.githubusercontent.com/PR4NJ41/katt/builds/KatProvider.cs3",
+        "name": "KatProvider"
     }
 ]
