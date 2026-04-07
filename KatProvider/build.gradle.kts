@@ -27,7 +27,7 @@ cloudstream {
     language = "en"
 
     // Random CC logo I found
-    iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
+    iconUrl = "https://archive.org/download/mx-player-logo-450x450/mx-player-logo-450x450.png"
 }
 
 android {
