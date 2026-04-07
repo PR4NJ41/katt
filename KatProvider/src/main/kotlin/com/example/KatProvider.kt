@@ -23,6 +23,17 @@ class KatProvider : MainAPI() {
     override val hasMainPage = true
 
     private val apiUrl = "$mainUrl/wp-json/wp/v2"
+    private val siteHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language" to "en-US,en;q=0.9",
+        "Cache-Control" to "no-cache",
+        "Pragma" to "no-cache",
+        "Upgrade-Insecure-Requests" to "1",
+    )
+    private val jsonHeaders = siteHeaders + mapOf(
+        "Accept" to "application/json,text/plain,*/*"
+    )
 
     private val mediaCache = linkedMapOf<Int, String?>()
 
@@ -35,7 +46,7 @@ class KatProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = buildPagedUrl(request.data, page)
-        val document = app.get(url).document
+        val document = getDocument(url)
         val items = document.toSearchResults()
         return newHomePageResponse(
             listOf(HomePageList(request.name, items)),
@@ -45,13 +56,13 @@ class KatProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val encoded = URLEncoder.encode(query, "UTF-8")
-        return app.get("$mainUrl/?s=$encoded").document.toSearchResults()
+        return getDocument("$mainUrl/?s=$encoded").toSearchResults()
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val initialData = parseLoadData(url)
         val targetUrl = initialData?.url ?: url
-        val document = runCatching { app.get(targetUrl).document }.getOrNull()
+        val document = runCatching { getDocument(targetUrl) }.getOrNull()
         val post = if (document == null) {
             initialData?.postId?.let { getPostById(it) }
                 ?: initialData?.slug?.let { getPostBySlug(it) }
@@ -139,7 +150,7 @@ class KatProvider : MainAPI() {
         val referer = post?.canonicalUrl() ?: loadData?.url ?: data.removeSurrounding("\"")
         val contentHtml = post?.renderedContentHtml()
             ?: loadData?.contentHtml
-            ?: app.get(referer).document.selectFirst("article, .entry-content, .post-content")?.html().orEmpty()
+            ?: getDocument(referer, referer).selectFirst("article, .entry-content, .post-content")?.html().orEmpty()
 
         if (contentHtml.isBlank()) return false
 
@@ -163,13 +174,13 @@ class KatProvider : MainAPI() {
         }.joinToString("&")
 
         return runCatching {
-            app.get("$apiUrl/posts?$query").text.parsedSafe<List<WpPost>>() ?: emptyList()
+            getJsonText("$apiUrl/posts?$query").parsedSafe<List<WpPost>>() ?: emptyList()
         }.getOrElse { emptyList() }
     }
 
     private suspend fun getPostById(id: Int): WpPost? {
         return runCatching {
-            app.get("$apiUrl/posts/$id").text.parsedSafe<WpPost>()
+            getJsonText("$apiUrl/posts/$id").parsedSafe<WpPost>()
         }.getOrNull()
     }
 
@@ -177,7 +188,7 @@ class KatProvider : MainAPI() {
         if (slug.isBlank()) return null
         val encodedSlug = URLEncoder.encode(slug, "UTF-8")
         return runCatching {
-            app.get("$apiUrl/posts?slug=$encodedSlug&per_page=1").text.parsedSafe<List<WpPost>>()?.firstOrNull()
+            getJsonText("$apiUrl/posts?slug=$encodedSlug&per_page=1").parsedSafe<List<WpPost>>()?.firstOrNull()
         }.getOrNull()
     }
 
@@ -185,7 +196,7 @@ class KatProvider : MainAPI() {
         if (mediaId == null || mediaId <= 0) return null
         mediaCache[mediaId]?.let { return it }
         val url = runCatching {
-            app.get("$apiUrl/media/$mediaId").text.parsedSafe<WpMedia>()?.sourceUrl
+            getJsonText("$apiUrl/media/$mediaId").parsedSafe<WpMedia>()?.sourceUrl
         }.getOrNull()
         mediaCache[mediaId] = url
         return url
@@ -380,7 +391,7 @@ class KatProvider : MainAPI() {
     }
 
     private suspend fun extractManifestEpisodes(playUrl: String, referer: String): List<com.lagradost.cloudstream3.Episode> {
-        val text = app.get(playUrl, referer = referer).text
+        val text = getText(playUrl, referer)
         return Regex("""name:"([^"]+S\d{1,2}E\d{1,3}[^"]*)",([^}]*)}""")
             .findAll(text)
             .mapNotNull { match ->
@@ -464,7 +475,7 @@ class KatProvider : MainAPI() {
             return true
         }
 
-        val response = runCatching { app.get(normalizedTarget, referer = referer) }.getOrNull() ?: return false
+        val response = runCatching { getResponse(normalizedTarget, referer) }.getOrNull() ?: return false
         val html = response.document.selectFirst("article, .entry-content, .post-content, body")?.html().orEmpty()
 
         return if (html.isNotBlank()) {
@@ -476,6 +487,31 @@ class KatProvider : MainAPI() {
 
     private fun fixUrlNull(url: String?): String? {
         return url?.takeIf { it.isNotBlank() }?.let { normalizeUrl(it) }
+    }
+
+    private suspend fun getDocument(url: String, referer: String? = null): Document {
+        return getResponse(url, referer).document
+    }
+
+    private suspend fun getText(url: String, referer: String? = null): String {
+        return getResponse(url, referer).text
+    }
+
+    private suspend fun getJsonText(url: String, referer: String? = null): String {
+        return app.get(
+            url,
+            headers = headersFor(referer, jsonHeaders)
+        ).text
+    }
+
+    private suspend fun getResponse(url: String, referer: String? = null) = app.get(
+        url,
+        headers = headersFor(referer, siteHeaders),
+        referer = referer
+    )
+
+    private fun headersFor(referer: String?, base: Map<String, String>): Map<String, String> {
+        return if (referer.isNullOrBlank()) base else base + mapOf("Referer" to referer)
     }
 
     private fun hasNextPage(document: Document): Boolean {
@@ -497,7 +533,7 @@ class KatProvider : MainAPI() {
 
         return when {
             link.contains("/play?") -> {
-                val text = app.get(link, referer = referer).text
+                val text = getText(link, referer)
                 val releaseName = Regex("""name:"([^"]+)"""").find(text)?.groupValues?.getOrNull(1)
                 val quality = getQualityFromName(releaseName)
                 val streamtapeIds = Regex("""streamtape_res:"([^"]+)"""").findAll(text)
@@ -538,7 +574,7 @@ class KatProvider : MainAPI() {
             }
 
             link.contains("/file/") -> {
-                val text = app.get(link, referer = referer).text
+                val text = getText(link, referer)
                 val directLinks = Regex("""https?://[^"'\\s<>]+""").findAll(text)
                     .map { it.value.trimEnd('"', '\\') }
                     .filter {
