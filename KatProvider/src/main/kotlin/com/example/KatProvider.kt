@@ -35,6 +35,8 @@ class KatProvider : MainAPI() {
     private val jsonHeaders = siteHeaders + mapOf(
         "Accept" to "application/json,text/plain,*/*"
     )
+    private val defaultStreamTapeBase = "https://streamtape.com/e/"
+    private val defaultStreamWishBase = "https://hanerix.com/e/"
 
     private val mediaCache = linkedMapOf<Int, String?>()
 
@@ -56,6 +58,8 @@ class KatProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        val apiResults = getPosts(search = query).mapNotNull { it.toSearchResponse() }
+        if (apiResults.isNotEmpty()) return apiResults
         val encoded = URLEncoder.encode(query, "UTF-8")
         return getDocument("$mainUrl/?s=$encoded").toSearchResults()
     }
@@ -432,8 +436,13 @@ class KatProvider : MainAPI() {
     }
 
     private fun parseEpisodeDataFromPlayPage(playText: String, playUrl: String): List<EpisodeData> {
-        return Regex("""\{name:"([^"]+)"([^{}]*?)\}""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-            .findAll(playText)
+        val linksBlock = extractResolvedDataBlock(playText, 2) ?: playText
+        val infoBlock = extractResolvedDataBlock(playText, 1) ?: playText
+        val streamTapeBase = extractPlatformLink(linksBlock, "streamtape_res") ?: defaultStreamTapeBase
+        val streamWishBase = extractPlatformLink(linksBlock, "streamwish_res") ?: defaultStreamWishBase
+
+        return Regex("""\w+:\{name:"([^"]+)"([^{}]*?)\}""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .findAll(infoBlock)
             .mapNotNull { match ->
                 val fileName = match.groupValues[1].trim()
                 if (!Regex("""(?i)S\d{1,2}E\d{1,3}""").containsMatchIn(fileName)) return@mapNotNull null
@@ -444,10 +453,33 @@ class KatProvider : MainAPI() {
                     playUrl = playUrl,
                     fileName = fileName,
                     streamTapeId = streamTapeId,
-                    streamWishId = streamWishId
+                    streamWishId = streamWishId,
+                    streamTapeUrl = streamTapeId?.let { buildPlatformUrl(streamTapeBase, it) },
+                    streamWishUrl = streamWishId?.let { buildPlatformUrl(streamWishBase, it) },
                 )
             }
             .toList()
+    }
+
+    private fun extractResolvedDataBlock(playText: String, id: Int): String? {
+        return Regex(
+            """__sveltekit_[a-z0-9]+\.resolve\(\{id:$id,data:\{(.*?)\},error:void 0\}\)""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        ).find(playText)?.groupValues?.getOrNull(1)
+    }
+
+    private fun extractPlatformLink(block: String, key: String): String? {
+        return Regex(
+            """$key\s*:\s*\{[^{}]*link:"([^"]+)"""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        ).find(block)?.groupValues?.getOrNull(1)
+            ?.trim()
+            ?.takeUnless { it.isBlank() }
+    }
+
+    private fun buildPlatformUrl(base: String, id: String): String {
+        val normalizedBase = if (base.endsWith("/")) base else "$base/"
+        return "$normalizedBase$id"
     }
 
     private fun extractIdFromBlock(block: String, key: String): String? {
@@ -672,14 +704,18 @@ class KatProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ) {
         debugLog(
-            "emitEpisodeLinks playUrl=${episodeData.playUrl} streamTapeId=${episodeData.streamTapeId?.shortId()} streamWishId=${episodeData.streamWishId?.shortId()}"
+            "emitEpisodeLinks playUrl=${episodeData.playUrl} " +
+                "streamTapeId=${episodeData.streamTapeId?.shortId()} streamWishId=${episodeData.streamWishId?.shortId()} " +
+                "streamTapeUrl=${episodeData.streamTapeUrl} streamWishUrl=${episodeData.streamWishUrl}"
         )
-        episodeData.streamTapeId?.let { id ->
-            loadExtractor("https://streamtape.com/e/$id", episodeData.playUrl, subtitleCallback, callback)
-        }
+        val links = linkedSetOf<String>()
+        episodeData.streamTapeUrl?.let { links.add(it) }
+        episodeData.streamWishUrl?.let { links.add(it) }
+        episodeData.streamTapeId?.let { links.add(buildPlatformUrl(defaultStreamTapeBase, it)) }
+        episodeData.streamWishId?.let { links.add(buildPlatformUrl(defaultStreamWishBase, it)) }
 
-        episodeData.streamWishId?.let { id ->
-            loadExtractor("https://hglink.to/e/$id", episodeData.playUrl, subtitleCallback, callback)
+        links.forEach { link ->
+            loadExtractor(link, episodeData.playUrl, subtitleCallback, callback)
         }
     }
 
@@ -719,6 +755,8 @@ class KatProvider : MainAPI() {
         val fileName: String,
         val streamTapeId: String? = null,
         val streamWishId: String? = null,
+        val streamTapeUrl: String? = null,
+        val streamWishUrl: String? = null,
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
