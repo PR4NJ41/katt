@@ -33,7 +33,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": 2,
+        "version": 3,
         "internalName": "KatProvider",
         "description": "KatmovieHD provider",
         "url": "https://raw.githubusercontent.com/PR4NJ41/katt/builds/KatProvider.cs3",
