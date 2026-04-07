@@ -175,18 +175,18 @@ class KatProvider : MainAPI() {
     }
 
     private fun extractEpisodes(document: Document, title: String): List<Episode> {
+        val episodePattern = Regex(
+            """(?i)(?:s(?:eason)?\s*(\d+))?[^a-z0-9]*(?:e(?:pisode)?\s*|ep\s*|e)(\d{1,3})|(\d{1,2})x(\d{1,3})"""
+        )
+
         val parsedEpisodes = document.select(".entry-content a[href], .post-content a[href], article a[href]")
             .mapNotNull { link ->
                 val text = link.text().trim()
                 val href = link.attr("href").trim()
                 if (href.isBlank() || !href.startsWith("http")) return@mapNotNull null
 
-                val match = Regex(
-                    """(?i)(?:s(?:eason)?\s*(\d+))?[^a-z0-9]*(?:e(?:pisode)?\s*|ep\s*|e)(\d{1,3})|(\d{1,2})x(\d{1,3})"""
-                ).find(text)
-                    ?: Regex(
-                        """(?i)(?:s(?:eason)?\s*(\d+))?[^a-z0-9]*(?:e(?:pisode)?\s*|ep\s*|e)(\d{1,3})|(\d{1,2})x(\d{1,3})"""
-                    ).find(href)
+                val match = episodePattern.find(text)
+                    ?: episodePattern.find(href)
                     ?: return@mapNotNull null
 
                 val seasonNumber = match.groupValues.getOrNull(1)?.toIntOrNull()
@@ -207,8 +207,18 @@ class KatProvider : MainAPI() {
         if (parsedEpisodes.size > 1) return parsedEpisodes
 
         val fallbackLinks = document.select(".entry-content a[href], .post-content a[href], article a[href]")
-            .map { it.attr("href").trim() }
-            .filter { it.contains("links.kmhd.eu/file/") || it.contains("links.kmhd.eu/play?") }
+            .mapNotNull { link ->
+                val text = link.text().trim()
+                val href = link.attr("href").trim()
+                if (href.isBlank()) return@mapNotNull null
+                if (!href.contains("links.kmhd.eu/file/") && !href.contains("links.kmhd.eu/play?")) {
+                    return@mapNotNull null
+                }
+                if (episodePattern.find(text) == null && episodePattern.find(href) == null) {
+                    return@mapNotNull null
+                }
+                href
+            }
             .distinct()
 
         if (!title.contains("all episodes", ignoreCase = true) || fallbackLinks.size <= 1) {
