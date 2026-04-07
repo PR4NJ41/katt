@@ -18,6 +18,7 @@ class KatProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
+        "$mainUrl/" to "Home",
         "$mainUrl/category/tv-shows/" to "TV Shows",
         "$mainUrl/category/movies/" to "Movies",
         "$mainUrl/category/dual-audio/" to "Dual Audio",
@@ -123,7 +124,9 @@ class KatProvider : MainAPI() {
             }
 
         candidateLinks.forEach { link ->
-            loadExtractor(link, url, subtitleCallback, callback)
+            if (!loadKmhdLink(link, url, subtitleCallback, callback)) {
+                loadExtractor(link, url, subtitleCallback, callback)
+            }
         }
 
         return candidateLinks.isNotEmpty()
@@ -228,5 +231,59 @@ class KatProvider : MainAPI() {
 
     private fun fixUrlNull(url: String?): String? {
         return url?.takeIf { it.isNotBlank() }?.let { fixUrl(it) }
+    }
+
+    private suspend fun loadKmhdLink(
+        link: String,
+        referer: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        if (!link.contains("links.kmhd.eu")) return false
+
+        return when {
+            link.contains("/play?") -> {
+                val text = app.get(link, referer = referer).text
+                val streamtapeIds = Regex("""streamtape_res:"([^"]+)"""").findAll(text)
+                    .map { it.groupValues[1] }
+                    .filter { it.isNotBlank() && it != "null" }
+                    .toSet()
+                val streamwishIds = Regex("""streamwish_res:"([^"]+)"""").findAll(text)
+                    .map { it.groupValues[1] }
+                    .filter { it.isNotBlank() && it != "null" }
+                    .toSet()
+
+                streamtapeIds.forEach { id ->
+                    loadExtractor("https://streamtape.com/e/$id", referer, subtitleCallback, callback)
+                }
+                streamwishIds.forEach { id ->
+                    loadExtractor("https://hglink.to/e/$id", referer, subtitleCallback, callback)
+                }
+
+                streamtapeIds.isNotEmpty() || streamwishIds.isNotEmpty()
+            }
+
+            link.contains("/file/") -> {
+                val text = app.get(link, referer = referer).text
+                val directLinks = Regex("""https?://[^"'\\s<>]+""").findAll(text)
+                    .map { it.value.trimEnd('"', '\\') }
+                    .filter {
+                        it.contains("katdrive.eu/file/") ||
+                            it.contains("gd.kmhd.eu/file/") ||
+                            it.contains("hubcloud.foo/drive/") ||
+                            it.contains("send.cm/") ||
+                            it.contains("1fichier.com/") ||
+                            it.contains("fuckingfast.net/")
+                    }
+                    .toSet()
+
+                directLinks.forEach { out ->
+                    loadExtractor(out, referer, subtitleCallback, callback)
+                }
+                false
+            }
+
+            else -> false
+        }
     }
 }
