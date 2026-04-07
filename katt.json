@@ -1,8 +1,0 @@
-{
-  "name": "katt",
-  "description": "Cloudstream plugin repository by PR4NJ41",
-  "manifestVersion": 1,
-  "pluginLists": [
-    "https://raw.githubusercontent.com/PR4NJ41/katt/builds/plugins.json"
-  ]
-}
