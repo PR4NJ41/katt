@@ -46,15 +46,20 @@ class KatProvider : MainAPI() {
             }
         }
 
-        val items = posts.mapNotNull { it.toSearchResponse() }
+        val items = if (posts.isNotEmpty()) {
+            posts.mapNotNull { it.toSearchResponse() }
+        } else {
+            loadHtmlMainPage(page, request.data)
+        }
         return newHomePageResponse(
             listOf(HomePageList(request.name, items)),
-            hasNext = posts.isNotEmpty()
+            hasNext = items.isNotEmpty()
         )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        return getPosts(search = query).mapNotNull { it.toSearchResponse() }
+        val apiResults = getPosts(search = query).mapNotNull { it.toSearchResponse() }
+        return apiResults.ifEmpty { loadHtmlSearch(query) }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -190,11 +195,65 @@ class KatProvider : MainAPI() {
         val loadData = toLoadData()
 
         return if (type == TvType.TvSeries) {
-            newTvSeriesSearchResponse(title, loadData.toJson(), TvType.TvSeries) {
+            newTvSeriesSearchResponse(title, canonicalUrl(), TvType.TvSeries) {
                 this.posterUrl = poster
             }
         } else {
-            newMovieSearchResponse(title, loadData.toJson(), TvType.Movie) {
+            newMovieSearchResponse(title, canonicalUrl(), TvType.Movie) {
+                this.posterUrl = poster
+            }
+        }
+    }
+
+    private suspend fun loadHtmlMainPage(page: Int, section: String): List<SearchResponse> {
+        val baseUrl = when (section) {
+            "movies" -> "$mainUrl/category/movies/"
+            "tv-shows" -> "$mainUrl/category/tv-shows/"
+            "dual-audio" -> "$mainUrl/category/dual-audio/"
+            else -> "$mainUrl/"
+        }
+        val target = if (page <= 1) baseUrl else "${baseUrl.trimEnd('/')}/page/$page/"
+        return runCatching { app.get(target).document.toSearchResults() }.getOrElse { emptyList() }
+    }
+
+    private suspend fun loadHtmlSearch(query: String): List<SearchResponse> {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        return runCatching { app.get("$mainUrl/?s=$encoded").document.toSearchResults() }.getOrElse { emptyList() }
+    }
+
+    private fun Document.toSearchResults(): List<SearchResponse> {
+        return select("article, .post, .posts .post, .blog_item")
+            .mapNotNull { it.toSearchResult() }
+            .distinctBy { it.url }
+    }
+
+    private fun Element.toSearchResult(): SearchResponse? {
+        val anchor = selectFirst("h2 a, h3 a, .entry-title a, .post-title a, a[rel=bookmark], a")
+            ?: return null
+        val href = anchor.attr("href").trim().takeIf { it.startsWith("http") } ?: return null
+
+        val title = anchor.text().trim()
+            .ifBlank { selectFirst("img")?.attr("alt")?.trim().orEmpty() }
+            .ifBlank { return null }
+
+        val poster = fixUrlNull(
+            selectFirst("img")?.let { img ->
+                img.attr("data-src").ifBlank {
+                    img.attr("src").ifBlank {
+                        img.attr("data-lazy-src")
+                    }
+                }
+            }
+        )
+
+        val type = guessType(href, title)
+
+        return if (type == TvType.TvSeries) {
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                this.posterUrl = poster
+            }
+        } else {
+            newMovieSearchResponse(title, href, TvType.Movie) {
                 this.posterUrl = poster
             }
         }
@@ -265,6 +324,21 @@ class KatProvider : MainAPI() {
             lowered.contains("tv series") ||
             lowered.contains("season") ||
             Regex("""\bs\d{1,2}\b""").containsMatchIn(lowered)
+        ) {
+            TvType.TvSeries
+        } else {
+            TvType.Movie
+        }
+    }
+
+    private fun guessType(url: String, title: String): TvType {
+        val lowered = "$url $title".lowercase(Locale.ROOT)
+        return if (
+            lowered.contains("season") ||
+            lowered.contains("tv series") ||
+            lowered.contains("tv-show") ||
+            lowered.contains("s0") ||
+            lowered.contains("/category/tv-shows/")
         ) {
             TvType.TvSeries
         } else {
