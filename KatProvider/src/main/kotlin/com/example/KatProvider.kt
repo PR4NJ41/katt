@@ -23,7 +23,7 @@ class KatProvider : MainAPI() {
     override val hasMainPage = true
 
     private val apiUrl = "$mainUrl/wp-json/wp/v2"
-    private val debugNetwork = false
+    private val debugNetwork = true
     private val siteHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -436,6 +436,8 @@ class KatProvider : MainAPI() {
     }
 
     private fun parseEpisodeDataFromPlayPage(playText: String, playUrl: String): List<EpisodeData> {
+        Log.d("KatProvider", "parseEpisodeDataFromPlayPage: START playUrl=$playUrl textLen=${playText.length}")
+        
         val linksBlock = extractResolvedDataBlock(playText, 2) ?: playText
         val infoBlock = extractResolvedDataBlock(playText, 1) ?: playText
         val streamTapeBase = extractPlatformLink(linksBlock, "streamtape_res") ?: defaultStreamTapeBase
@@ -451,12 +453,19 @@ class KatProvider : MainAPI() {
         )
         
         val matches = episodePattern.findAll(infoBlock)
+        Log.d("KatProvider", "parseEpisodeDataFromPlayPage: Found ${matches.count()} potential matches")
+        
         for (match in matches) {
             val episodeKey = match.groupValues.getOrNull(1) ?: continue
             val episodeName = match.groupValues.getOrNull(2)?.trim() ?: continue
             
+            Log.d("KatProvider", "parseEpisodeDataFromPlayPage: Processing key=$episodeKey name=$episodeName")
+            
             // Verify it's a valid episode (contains season/episode info)
-            if (!Regex("""(?i)S\d{1,2}E\d{1,3}""").containsMatchIn(episodeName)) continue
+            if (!Regex("""(?i)S\d{1,2}E\d{1,3}""").containsMatchIn(episodeName)) {
+                Log.d("KatProvider", "parseEpisodeDataFromPlayPage: Skipped $episodeName (no S##E## pattern)")
+                continue
+            }
             
             // Extract the full object content between the braces
             val bracesStart = match.range.first + match.value.indexOf('{')
@@ -475,7 +484,10 @@ class KatProvider : MainAPI() {
                 }
             }
             
-            if (bracesEnd == -1) continue
+            if (bracesEnd == -1) {
+                Log.d("KatProvider", "parseEpisodeDataFromPlayPage: Could not find closing brace for $episodeName")
+                continue
+            }
             
             val objectContent = infoBlock.substring(bracesStart + 1, bracesEnd)
             
@@ -487,7 +499,7 @@ class KatProvider : MainAPI() {
             val streamWishMatch = Regex("""streamwish_res:"([^"]*)""").find(objectContent)
             val streamWishId = streamWishMatch?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() && it != "null" }
             
-            debugLog("Parsed episode: $episodeName key=$episodeKey st=$streamTapeId sw=$streamWishId")
+            Log.d("KatProvider", "Parsed episode: $episodeName st=$streamTapeId sw=$streamWishId")
             
             episodes.add(
                 EpisodeData(
@@ -500,6 +512,8 @@ class KatProvider : MainAPI() {
                 )
             )
         }
+        
+        Log.d("KatProvider", "parseEpisodeDataFromPlayPage: END found ${episodes.size} episodes")
         
         return episodes
     }
