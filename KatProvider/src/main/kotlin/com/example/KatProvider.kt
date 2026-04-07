@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -135,7 +134,7 @@ class KatProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         parseEpisodeData(data)?.let { episodeData ->
-            emitEpisodeLinks(episodeData, callback)
+            emitEpisodeLinks(episodeData, subtitleCallback, callback)
             return episodeData.streamTapeId != null || episodeData.streamWishId != null
         }
 
@@ -546,28 +545,10 @@ class KatProvider : MainAPI() {
                     .toSet()
 
                 streamtapeIds.forEach { id ->
-                    callback(
-                        newExtractorLink(
-                            source = "StreamTape",
-                            name = "StreamTape",
-                            url = "https://streamtape.com/e/$id"
-                        ) {
-                            this.referer = referer
-                            this.quality = quality
-                        }
-                    )
+                    loadExtractor("https://streamtape.com/e/$id", referer, subtitleCallback, callback)
                 }
                 streamwishIds.forEach { id ->
-                    callback(
-                        newExtractorLink(
-                            source = "StreamWish",
-                            name = "StreamWish",
-                            url = "https://hglink.to/e/$id"
-                        ) {
-                            this.referer = referer
-                            this.quality = quality
-                        }
-                    )
+                    loadExtractor("https://hglink.to/e/$id", referer, subtitleCallback, callback)
                 }
 
                 streamtapeIds.isNotEmpty() || streamwishIds.isNotEmpty()
@@ -607,34 +588,15 @@ class KatProvider : MainAPI() {
 
     private suspend fun emitEpisodeLinks(
         episodeData: EpisodeData,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ) {
-        val quality = getQualityFromName(episodeData.fileName)
-
         episodeData.streamTapeId?.let { id ->
-            callback(
-                newExtractorLink(
-                    source = "StreamTape",
-                    name = "StreamTape",
-                    url = "https://streamtape.com/e/$id"
-                ) {
-                    this.referer = episodeData.playUrl
-                    this.quality = quality
-                }
-            )
+            loadExtractor("https://streamtape.com/e/$id", episodeData.playUrl, subtitleCallback, callback)
         }
 
         episodeData.streamWishId?.let { id ->
-            callback(
-                newExtractorLink(
-                    source = "StreamWish",
-                    name = "StreamWish",
-                    url = "https://hglink.to/e/$id"
-                ) {
-                    this.referer = episodeData.playUrl
-                    this.quality = quality
-                }
-            )
+            loadExtractor("https://hglink.to/e/$id", episodeData.playUrl, subtitleCallback, callback)
         }
     }
 
