@@ -185,15 +185,24 @@ class KatProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
+        Log.d("KatProvider", "loadLinks() called with data length=${data.length}")
+        
         parseEpisodeData(data)?.let { episodeData ->
+            Log.d("KatProvider", "loadLinks() Parsed EpisodeData: file=${episodeData.fileName} st=${episodeData.streamTapeId?.take(8)} sw=${episodeData.streamWishId?.take(8)}")
             val resolvedEpisodeData = resolveEpisodeDataFromPlayPage(episodeData)
+            Log.d("KatProvider", "loadLinks() Resolved: st=${resolvedEpisodeData.streamTapeId?.take(8)} sw=${resolvedEpisodeData.streamWishId?.take(8)}")
             emitEpisodeLinks(resolvedEpisodeData, subtitleCallback, callback)
-            return resolvedEpisodeData.streamTapeId != null || resolvedEpisodeData.streamWishId != null
+            val result = resolvedEpisodeData.streamTapeId != null || resolvedEpisodeData.streamWishId != null
+            Log.d("KatProvider", "loadLinks() Result from EpisodeData: $result")
+            return result
         }
 
+        Log.d("KatProvider", "loadLinks() Failed to parse EpisodeData, falling back to LoadData...")
+        
         val loadData = parseLoadData(data)
         val directEpisodeUrl = loadData?.episodeUrl?.takeIf { it.isNotBlank() }
         if (directEpisodeUrl != null) {
+            Log.d("KatProvider", "loadLinks() Using directEpisodeUrl: $directEpisodeUrl")
             return loadLinksFromUrl(directEpisodeUrl, loadData.url ?: directEpisodeUrl, subtitleCallback, callback)
         }
 
@@ -204,8 +213,12 @@ class KatProvider : MainAPI() {
             ?: loadData?.contentHtml
             ?: getDocument(referer, referer).selectFirst("article, .entry-content, .post-content")?.html().orEmpty()
 
-        if (contentHtml.isBlank()) return false
+        if (contentHtml.isBlank()) {
+            Log.d("KatProvider", "loadLinks() No content found")
+            return false
+        }
 
+        Log.d("KatProvider", "loadLinks() Loading from HTML")
         return loadLinksFromHtml(contentHtml, referer, subtitleCallback, callback)
     }
 
@@ -840,6 +853,7 @@ class KatProvider : MainAPI() {
         val contentHtml: String? = null,
     )
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class EpisodeData(
         val playUrl: String,
         val fileName: String,
