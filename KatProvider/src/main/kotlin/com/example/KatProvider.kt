@@ -805,7 +805,7 @@ class KatProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ) {
-        debugLog(
+        Log.d("KatProvider", 
             "emitEpisodeLinks playUrl=${episodeData.playUrl} " +
                 "streamTapeId=${episodeData.streamTapeId?.shortId()} streamWishId=${episodeData.streamWishId?.shortId()} " +
                 "streamTapeUrl=${episodeData.streamTapeUrl} streamWishUrl=${episodeData.streamWishUrl}"
@@ -817,8 +817,28 @@ class KatProvider : MainAPI() {
         episodeData.streamWishUrl?.let { links.add(it) }
             ?: episodeData.streamWishId?.let { links.add(buildPlatformUrl(defaultStreamWishBase, it)) }
 
-        for (link in links) {
-            loadExtractor(link, episodeData.playUrl, subtitleCallback, callback)
+        Log.d("KatProvider", "emitEpisodeLinks: Found ${links.size} links to extract: ${links.joinToString(", ")}")
+        
+        if (links.isEmpty()) {
+            Log.d("KatProvider", "emitEpisodeLinks: No links available to extract")
+            return
+        }
+
+        for ((index, link) in links.withIndex()) {
+            Log.d("KatProvider", "emitEpisodeLinks: Attempting to load link [$index] $link with referer ${episodeData.playUrl}")
+            try {
+                var linkCount = 0
+                val countingCallback: (ExtractorLink) -> Unit = { extractedLink ->
+                    linkCount++
+                    Log.d("KatProvider", "emitEpisodeLinks: Extractor returned link #$linkCount: ${extractedLink.name} - ${extractedLink.url.take(50)}")
+                    callback(extractedLink)
+                }
+                
+                loadExtractor(link, episodeData.playUrl, subtitleCallback, countingCallback)
+                Log.d("KatProvider", "emitEpisodeLinks: Completed extractor $index, returned $linkCount links")
+            } catch (e: Exception) {
+                Log.d("KatProvider", "emitEpisodeLinks: Exception loading link at index $index: ${e.message}")
+            }
         }
     }
 
