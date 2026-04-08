@@ -811,58 +811,48 @@ class KatProvider : MainAPI() {
                 "streamTapeUrl=${episodeData.streamTapeUrl} streamWishUrl=${episodeData.streamWishUrl}"
         )
         
-        // Prioritize StreamWish first (it's working reliably), then StreamTape, then direct URLs as fallback
-        val links = linkedSetOf<String>()
-        
-        // Add StreamWish first (priority)
-        episodeData.streamWishUrl?.let { links.add(it) }
-            ?: episodeData.streamWishId?.let { links.add(buildPlatformUrl(defaultStreamWishBase, it)) }
-        
-        // Add StreamTape second
-        episodeData.streamTapeUrl?.let { links.add(it) }
-            ?: episodeData.streamTapeId?.let { links.add(buildPlatformUrl(defaultStreamTapeBase, it)) }
+        // StreamWish (hglink.to) is working reliably, skip StreamTape as it never returns links
+        val streamWishUrl = episodeData.streamWishUrl 
+            ?: episodeData.streamWishId?.let { buildPlatformUrl(defaultStreamWishBase, it) }
 
-        Log.d("KatProvider", "emitEpisodeLinks: Prioritizing StreamWish & StreamTape - Found ${links.size} extractor links to try")
-        
-        var linksFound = 0
-        for ((index, link) in links.withIndex()) {
-            Log.d("KatProvider", "emitEpisodeLinks: Attempting extractor link [$index] $link")
+        if (streamWishUrl != null) {
+            Log.d("KatProvider", "emitEpisodeLinks: Using StreamWish")
             try {
                 var linkCount = 0
                 val countingCallback: (ExtractorLink) -> Unit = { extractedLink ->
                     linkCount++
-                    linksFound++
-                    Log.d("KatProvider", "emitEpisodeLinks: Extractor returned link #$linkCount: ${extractedLink.name}")
+                    Log.d("KatProvider", "emitEpisodeLinks: StreamWish returned link #$linkCount: ${extractedLink.name}")
                     callback(extractedLink)
                 }
+                loadExtractor(streamWishUrl, episodeData.playUrl, subtitleCallback, countingCallback)
+                Log.d("KatProvider", "emitEpisodeLinks: StreamWish returned $linkCount links")
                 
-                loadExtractor(link, episodeData.playUrl, subtitleCallback, countingCallback)
-                Log.d("KatProvider", "emitEpisodeLinks: Completed extractor $index, returned $linkCount links")
+                if (linkCount > 0) {
+                    return
+                }
             } catch (e: Exception) {
-                Log.d("KatProvider", "emitEpisodeLinks: Exception loading extractor link [$index]: ${e.message}")
+                Log.d("KatProvider", "emitEpisodeLinks: StreamWish failed - ${e.message}")
             }
         }
         
-        // Only try direct extraction if StreamWish/StreamTape didn't work
-        if (linksFound == 0) {
-            Log.d("KatProvider", "emitEpisodeLinks: No extractor links worked, trying direct URL extraction as fallback...")
-            val directUrls = tryExtractDirectVideoUrls(episodeData.playUrl, episodeData.fileName)
-            Log.d("KatProvider", "emitEpisodeLinks: Found ${directUrls.size} direct video URLs")
-            
-            for ((index, videoUrl) in directUrls.withIndex()) {
-                Log.d("KatProvider", "emitEpisodeLinks: Loading direct URL [$index]: ${videoUrl.take(60)}")
-                try {
-                    var linkCount = 0
-                    val countingCallback: (ExtractorLink) -> Unit = { extractedLink ->
-                        linkCount++
-                        Log.d("KatProvider", "emitEpisodeLinks: Direct URL returned link #$linkCount: ${extractedLink.name}")
-                        callback(extractedLink)
-                    }
-                    loadExtractor(videoUrl, episodeData.playUrl, subtitleCallback, countingCallback)
-                    Log.d("KatProvider", "emitEpisodeLinks: Direct URL [$index] returned $linkCount links")
-                } catch (e: Exception) {
-                    Log.d("KatProvider", "emitEpisodeLinks: Exception loading direct URL [$index]: ${e.message}")
+        // If StreamWish didn't work, try direct URL extraction as fallback
+        Log.d("KatProvider", "emitEpisodeLinks: StreamWish unavailable or failed, trying direct URL extraction...")
+        val directUrls = tryExtractDirectVideoUrls(episodeData.playUrl, episodeData.fileName)
+        Log.d("KatProvider", "emitEpisodeLinks: Found ${directUrls.size} direct video URLs")
+        
+        for ((index, videoUrl) in directUrls.withIndex()) {
+            Log.d("KatProvider", "emitEpisodeLinks: Loading direct URL [$index]: ${videoUrl.take(60)}")
+            try {
+                var linkCount = 0
+                val countingCallback: (ExtractorLink) -> Unit = { extractedLink ->
+                    linkCount++
+                    Log.d("KatProvider", "emitEpisodeLinks: Direct URL returned link #$linkCount: ${extractedLink.name}")
+                    callback(extractedLink)
                 }
+                loadExtractor(videoUrl, episodeData.playUrl, subtitleCallback, countingCallback)
+                Log.d("KatProvider", "emitEpisodeLinks: Direct URL [$index] returned $linkCount links")
+            } catch (e: Exception) {
+                Log.d("KatProvider", "emitEpisodeLinks: Exception loading direct URL [$index]: ${e.message}")
             }
         }
     }
