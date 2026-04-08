@@ -810,35 +810,94 @@ class KatProvider : MainAPI() {
                 "streamTapeId=${episodeData.streamTapeId?.shortId()} streamWishId=${episodeData.streamWishId?.shortId()} " +
                 "streamTapeUrl=${episodeData.streamTapeUrl} streamWishUrl=${episodeData.streamWishUrl}"
         )
+        
+        // Prioritize StreamWish first (it's working reliably), then StreamTape, then direct URLs as fallback
         val links = linkedSetOf<String>()
-        // Use pre-built URLs if available, fallback to reconstructing from IDs
-        episodeData.streamTapeUrl?.let { links.add(it) }
-            ?: episodeData.streamTapeId?.let { links.add(buildPlatformUrl(defaultStreamTapeBase, it)) }
+        
+        // Add StreamWish first (priority)
         episodeData.streamWishUrl?.let { links.add(it) }
             ?: episodeData.streamWishId?.let { links.add(buildPlatformUrl(defaultStreamWishBase, it)) }
-
-        Log.d("KatProvider", "emitEpisodeLinks: Found ${links.size} links to extract: ${links.joinToString(", ")}")
         
-        if (links.isEmpty()) {
-            Log.d("KatProvider", "emitEpisodeLinks: No links available to extract")
-            return
-        }
+        // Add StreamTape second
+        episodeData.streamTapeUrl?.let { links.add(it) }
+            ?: episodeData.streamTapeId?.let { links.add(buildPlatformUrl(defaultStreamTapeBase, it)) }
 
+        Log.d("KatProvider", "emitEpisodeLinks: Prioritizing StreamWish & StreamTape - Found ${links.size} extractor links to try")
+        
+        var linksFound = 0
         for ((index, link) in links.withIndex()) {
-            Log.d("KatProvider", "emitEpisodeLinks: Attempting to load link [$index] $link with referer ${episodeData.playUrl}")
+            Log.d("KatProvider", "emitEpisodeLinks: Attempting extractor link [$index] $link")
             try {
                 var linkCount = 0
                 val countingCallback: (ExtractorLink) -> Unit = { extractedLink ->
                     linkCount++
-                    Log.d("KatProvider", "emitEpisodeLinks: Extractor returned link #$linkCount: ${extractedLink.name} - ${extractedLink.url.take(50)}")
+                    linksFound++
+                    Log.d("KatProvider", "emitEpisodeLinks: Extractor returned link #$linkCount: ${extractedLink.name}")
                     callback(extractedLink)
                 }
                 
                 loadExtractor(link, episodeData.playUrl, subtitleCallback, countingCallback)
                 Log.d("KatProvider", "emitEpisodeLinks: Completed extractor $index, returned $linkCount links")
             } catch (e: Exception) {
-                Log.d("KatProvider", "emitEpisodeLinks: Exception loading link at index $index: ${e.message}")
+                Log.d("KatProvider", "emitEpisodeLinks: Exception loading extractor link [$index]: ${e.message}")
             }
+        }
+        
+        // Only try direct extraction if StreamWish/StreamTape didn't work
+        if (linksFound == 0) {
+            Log.d("KatProvider", "emitEpisodeLinks: No extractor links worked, trying direct URL extraction as fallback...")
+            val directUrls = tryExtractDirectVideoUrls(episodeData.playUrl, episodeData.fileName)
+            Log.d("KatProvider", "emitEpisodeLinks: Found ${directUrls.size} direct video URLs")
+            
+            for ((index, videoUrl) in directUrls.withIndex()) {
+                Log.d("KatProvider", "emitEpisodeLinks: Loading direct URL [$index]: ${videoUrl.take(60)}")
+                try {
+                    var linkCount = 0
+                    val countingCallback: (ExtractorLink) -> Unit = { extractedLink ->
+                        linkCount++
+                        Log.d("KatProvider", "emitEpisodeLinks: Direct URL returned link #$linkCount: ${extractedLink.name}")
+                        callback(extractedLink)
+                    }
+                    loadExtractor(videoUrl, episodeData.playUrl, subtitleCallback, countingCallback)
+                    Log.d("KatProvider", "emitEpisodeLinks: Direct URL [$index] returned $linkCount links")
+                } catch (e: Exception) {
+                    Log.d("KatProvider", "emitEpisodeLinks: Exception loading direct URL [$index]: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private suspend fun tryExtractDirectVideoUrls(playUrl: String, fileName: String): List<String> {
+        return try {
+            Log.d("KatProvider", "tryExtractDirectVideoUrls: Fetching play page for $fileName")
+            val text = getText(playUrl, playUrl)
+            val videoUrls = mutableListOf<String>()
+            
+            // Pattern 1: Look for direct HLS URLs (m3u8)
+            val hlsPattern = Regex("""https?://[^"'\s]+\.m3u8[^"'\s]*""", RegexOption.IGNORE_CASE)
+            for (match in hlsPattern.findAll(text)) {
+                val url = match.value.trim()
+                if (url.isNotEmpty() && !url.contains("cdn.plyr.io")) {  // Skip CDN scripts
+                    videoUrls.add(url)
+                    Log.d("KatProvider", "tryExtractDirectVideoUrls: Found HLS URL: ${url.take(60)}")
+                }
+            }
+            
+            // Pattern 2: Look for direct MP4 URLs
+            val mp4Pattern = Regex("""https?://[^"'\s]+\.mp4[^"'\s]*""", RegexOption.IGNORE_CASE)
+            for (match in mp4Pattern.findAll(text)) {
+                val url = match.value.trim()
+                if (url.isNotEmpty()) {
+                    videoUrls.add(url)
+                    Log.d("KatProvider", "tryExtractDirectVideoUrls: Found MP4 URL: ${url.take(60)}")
+                }
+            }
+            
+            // Remove duplicates
+            videoUrls.distinct()
+        } catch (e: Exception) {
+            Log.d("KatProvider", "tryExtractDirectVideoUrls: Exception - ${e.message}")
+            emptyList()
         }
     }
 
