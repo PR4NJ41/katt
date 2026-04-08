@@ -604,6 +604,12 @@ class KatProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
+        // Gofile requires JavaScript rendering - static parsing won't work
+        if (referer.contains("gofile.io", true)) {
+            Log.d("KatProvider", "loadLinksFromHtml: Skipping gofile.io (requires JavaScript rendering)")
+            return false
+        }
+        
         val document = Jsoup.parseBodyFragment(contentHtml, referer)
         val candidateLinks = linkedSetOf<String>()
 
@@ -623,17 +629,37 @@ class KatProvider : MainAPI() {
             if (href.contains("/tag/")) continue
             if (href.contains("/category/")) continue
             if (href.contains("/wp-content/")) continue
+            // Skip links that point back to directory pages
+            if (href.contains("gofile.io/d/", true)) continue
+            // Skip obvious UI elements and non-stream links
+            if (href.contains("/profile", true)) continue
+            if (href.contains("/upload", true)) continue
+            if (href.contains("/api", true)) continue
             candidateLinks.add(normalizeUrl(href))
         }
 
         debugLog("loadLinksFromHtml referer=$referer candidateLinks=${candidateLinks.size}")
+        var foundLinks = 0
         for (link in candidateLinks) {
             if (!loadKmhdLink(link, referer, subtitleCallback, callback)) {
-                loadExtractor(link, referer, subtitleCallback, callback)
+                var linkCount = 0
+                val countingCallback: (ExtractorLink) -> Unit = { extractedLink ->
+                    linkCount++
+                    foundLinks++
+                    callback(extractedLink)
+                }
+                loadExtractor(link, referer, subtitleCallback, countingCallback)
+                if (linkCount > 0) {
+                    Log.d("KatProvider", "loadLinksFromHtml: Link [$link] yielded $linkCount streams")
+                }
             }
         }
+        
+        if (foundLinks == 0 && candidateLinks.isNotEmpty()) {
+            Log.d("KatProvider", "loadLinksFromHtml: Extracted $candidateLinks.size links but none produced streams")
+        }
 
-        return candidateLinks.isNotEmpty()
+        return foundLinks > 0
     }
 
     private suspend fun loadLinksFromUrl(
@@ -643,6 +669,12 @@ class KatProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val normalizedTarget = normalizeUrl(targetUrl)
+
+        // Skip gofile.io - requires JavaScript rendering which static HTTP can't do
+        if (normalizedTarget.contains("gofile.io", true)) {
+            Log.d("KatProvider", "loadLinksFromUrl: Skipping gofile.io (requires JavaScript) - $normalizedTarget")
+            return false
+        }
 
         if (loadKmhdLink(normalizedTarget, referer, subtitleCallback, callback)) {
             return true
