@@ -612,12 +612,23 @@ class KatProvider : MainAPI() {
         
         val document = Jsoup.parseBodyFragment(contentHtml, referer)
         val candidateLinks = linkedSetOf<String>()
+        val videoPlayerLinks = linkedSetOf<String>()
 
+        // Extract video player iframes first (prioritize these)
         val iframes = document.select("iframe[src]")
         for (frame in iframes) {
-            frame.absUrl("src").ifBlank { frame.attr("src").trim() }
-                .takeIf { it.isNotBlank() }
-                ?.let { candidateLinks.add(normalizeUrl(it)) }
+            val src = frame.absUrl("src").ifBlank { frame.attr("src").trim() }
+                .takeIf { it.isNotBlank() } ?: continue
+            val normalizedSrc = normalizeUrl(src)
+            
+            // Prioritize known video player services
+            if (normalizedSrc.contains("1xplayer", true) || 
+                normalizedSrc.contains("vd.1xplayer", true)) {
+                Log.d("KatProvider", "loadLinksFromHtml: Found 1xplayer video player: $normalizedSrc")
+                videoPlayerLinks.add(normalizedSrc)
+            } else {
+                candidateLinks.add(normalizedSrc)
+            }
         }
 
         val anchors = document.select("a[href]")
@@ -638,8 +649,30 @@ class KatProvider : MainAPI() {
             candidateLinks.add(normalizeUrl(href))
         }
 
-        debugLog("loadLinksFromHtml referer=$referer candidateLinks=${candidateLinks.size}")
+        debugLog("loadLinksFromHtml referer=$referer videoPlayers=${videoPlayerLinks.size} candidateLinks=${candidateLinks.size}")
         var foundLinks = 0
+        
+        // Try video player links first (higher priority)
+        for (playerLink in videoPlayerLinks) {
+            Log.d("KatProvider", "loadLinksFromHtml: Trying 1xplayer video player...")
+            if (!loadKmhdLink(playerLink, referer, subtitleCallback, callback)) {
+                var linkCount = 0
+                val countingCallback: (ExtractorLink) -> Unit = { extractedLink ->
+                    linkCount++
+                    foundLinks++
+                    callback(extractedLink)
+                }
+                loadExtractor(playerLink, referer, subtitleCallback, countingCallback)
+                if (linkCount > 0) {
+                    Log.d("KatProvider", "loadLinksFromHtml: 1xplayer yielded $linkCount streams")
+                    return true // Success! Don't try other links
+                } else {
+                    Log.d("KatProvider", "loadLinksFromHtml: 1xplayer didn't produce streams")
+                }
+            }
+        }
+        
+        // Fall back to other candidate links
         for (link in candidateLinks) {
             if (!loadKmhdLink(link, referer, subtitleCallback, callback)) {
                 var linkCount = 0
@@ -655,8 +688,8 @@ class KatProvider : MainAPI() {
             }
         }
         
-        if (foundLinks == 0 && candidateLinks.isNotEmpty()) {
-            Log.d("KatProvider", "loadLinksFromHtml: Extracted $candidateLinks.size links but none produced streams")
+        if (foundLinks == 0 && (candidateLinks.isNotEmpty() || videoPlayerLinks.isNotEmpty())) {
+            Log.d("KatProvider", "loadLinksFromHtml: Extracted $videoPlayerLinks + $candidateLinks links but none produced streams")
         }
 
         return foundLinks > 0
